@@ -47,6 +47,7 @@ class AnalyzeSnapshotTests(unittest.TestCase):
                 "volume": 0.7,
                 "muted": True,
                 "is_browser": True,
+                "output_device": "Headphones (USB Audio Device)",
             }
         ]
 
@@ -57,6 +58,107 @@ class AnalyzeSnapshotTests(unittest.TestCase):
             by_code["browser-session-silent"]["severity"], "critical"
         )
         self.assertIn("msedge.exe", by_code["browser-session-silent"]["detail"])
+
+    def test_edge_at_zero_volume_is_critical(self):
+        """Regression: Windows test works, Edge session volume is 0%."""
+        snapshot = base_snapshot()
+        snapshot["core_audio"]["sessions"] = [
+            {
+                "process": "msedge.exe",
+                "volume": 0.0,
+                "muted": False,
+                "is_browser": True,
+                "output_device": "Headphones (EDIFIER W800BT Pro)",
+            }
+        ]
+        snapshot["core_audio"]["default_endpoint"] = {
+            "name": "Headphones (EDIFIER W800BT Pro)"
+        }
+        snapshot["portaudio"]["default_output_name"] = (
+            "Headphones (EDIFIER W800BT Pro)"
+        )
+        snapshot["portaudio"]["output_devices"] = [
+            {
+                "index": 4,
+                "name": "Headphones (EDIFIER W800BT Pro)",
+                "host_api": "Windows WASAPI",
+                "is_default": True,
+            }
+        ]
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(
+            by_code["browser-session-silent"]["severity"], "critical"
+        )
+        self.assertIn("0%", by_code["browser-session-silent"]["detail"])
+        self.assertIn("msedge.exe", by_code["browser-session-silent"]["detail"])
+        self.assertNotIn("browser-output-mismatch", by_code)
+
+    def test_browser_on_wrong_output_is_a_warning(self):
+        snapshot = base_snapshot()
+        snapshot["core_audio"]["sessions"] = [
+            {
+                "process": "msedge.exe",
+                "volume": 0.8,
+                "muted": False,
+                "is_browser": True,
+                "state": "1",
+                "output_device": "XZ240Q (NVIDIA High Definition Audio)",
+            }
+        ]
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(
+            by_code["browser-output-mismatch"]["severity"], "warning"
+        )
+        self.assertIn("XZ240Q", by_code["browser-output-mismatch"]["detail"])
+        self.assertIn(
+            "Volume mixer", by_code["browser-output-mismatch"]["action"]
+        )
+
+    def test_stale_browser_on_secondary_device_is_not_a_warning(self):
+        snapshot = base_snapshot()
+        snapshot["core_audio"]["sessions"] = [
+            {
+                "process": "msedge.exe",
+                "volume": 0.5,
+                "muted": False,
+                "is_browser": True,
+                "state": "0",
+                "output_device": "Headphones (USB Audio Device)",
+            },
+            {
+                "process": "msedge.exe",
+                "volume": 1.0,
+                "muted": False,
+                "is_browser": True,
+                "state": "0",
+                "output_device": "XZ240Q (NVIDIA High Definition Audio)",
+            },
+        ]
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertNotIn("browser-output-mismatch", by_code)
+        self.assertEqual(
+            by_code["browser-session-visible"]["severity"], "ok"
+        )
+
+    def test_low_master_volume_is_a_warning(self):
+        snapshot = base_snapshot()
+        snapshot["core_audio"]["master_volume"] = 0.15
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(by_code["master-volume-low"]["severity"], "warning")
+        self.assertIn("15%", by_code["master-volume-low"]["detail"])
+        self.assertNotIn("master-volume-ok", by_code)
 
     def test_missing_browser_gives_guidance(self):
         findings = analyze_snapshot(base_snapshot())
@@ -107,4 +209,3 @@ class DeviceNameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -143,6 +143,45 @@ def _collect_portaudio() -> tuple[dict[str, Any], list[dict[str, str]]]:
     return result, errors
 
 
+def _session_payload(
+    session: Any, output_device: str | None, output_device_id: str | None
+) -> dict[str, Any]:
+    simple_volume = session.SimpleAudioVolume
+    process_name = _friendly_process_name(session)
+    return {
+        "process": process_name,
+        "pid": int(getattr(session, "ProcessId", 0) or 0),
+        "display_name": str(getattr(session, "DisplayName", "") or ""),
+        "volume": round(float(simple_volume.GetMasterVolume()), 4),
+        "muted": bool(simple_volume.GetMute()),
+        "state": str(getattr(session, "State", "unknown")),
+        "is_browser": process_name.casefold() in BROWSER_PROCESSES,
+        "output_device": output_device,
+        "output_device_id": output_device_id,
+        "instance_id": str(getattr(session, "InstanceIdentifier", "") or ""),
+    }
+
+
+def _iter_device_sessions(device: Any) -> Iterable[Any]:
+    from pycaw.api.audiopolicy import IAudioSessionControl2
+    from pycaw.utils import AudioSession
+
+    manager = getattr(device, "AudioSessionManager", None)
+    if manager is None:
+        return []
+    enumerator = manager.GetSessionEnumerator()
+    count = int(enumerator.GetCount())
+    sessions: list[Any] = []
+    for index in range(count):
+        control = enumerator.GetSession(index)
+        if control is None:
+            continue
+        control2 = control.QueryInterface(IAudioSessionControl2)
+        if control2 is not None:
+            sessions.append(AudioSession(control2))
+    return sessions
+
+
 def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
     result: dict[str, Any] = {
         "default_endpoint": None,
@@ -156,6 +195,7 @@ def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
 
     _, co_uninitialize = _init_com()
     try:
+        from pycaw.constants import DEVICE_STATE, EDataFlow
         from pycaw.pycaw import AudioUtilities
 
         speakers = AudioUtilities.GetSpeakers()
@@ -188,27 +228,47 @@ def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
             except Exception as exc:
                 errors.append(_error("Master endpoint volume", exc))
 
-        for session in AudioUtilities.GetAllSessions():
+        seen_instances: set[str] = set()
+        playback_devices = AudioUtilities.GetAllDevices(
+            data_flow=EDataFlow.eRender.value,
+            device_state=DEVICE_STATE.ACTIVE.value,
+        )
+        for device in playback_devices:
+            device_name = str(getattr(device, "FriendlyName", "") or "") or None
+            device_id = str(getattr(device, "id", "") or "") or None
             try:
-                simple_volume = session.SimpleAudioVolume
-                process_name = _friendly_process_name(session)
-                result["sessions"].append(
-                    {
-                        "process": process_name,
-                        "pid": int(getattr(session, "ProcessId", 0) or 0),
-                        "display_name": str(
-                            getattr(session, "DisplayName", "") or ""
-                        ),
-                        "volume": round(
-                            float(simple_volume.GetMasterVolume()), 4
-                        ),
-                        "muted": bool(simple_volume.GetMute()),
-                        "state": str(getattr(session, "State", "unknown")),
-                        "is_browser": process_name.casefold() in BROWSER_PROCESSES,
-                    }
-                )
+                device_sessions = _iter_device_sessions(device)
             except Exception as exc:
-                errors.append(_error("Application audio session", exc))
+                errors.append(
+                    _error(f"Sessions on {device_name or 'playback device'}", exc)
+                )
+                continue
+            for session in device_sessions:
+                try:
+                    payload = _session_payload(session, device_name, device_id)
+                    instance_id = payload.get("instance_id") or ""
+                    dedupe_key = instance_id or (
+                        f"{payload['pid']}:{payload['process']}:"
+                        f"{device_id or device_name or ''}"
+                    )
+                    if dedupe_key in seen_instances:
+                        continue
+                    seen_instances.add(dedupe_key)
+                    result["sessions"].append(payload)
+                except Exception as exc:
+                    errors.append(_error("Application audio session", exc))
+
+        # Fallback: default-endpoint sessions only (older Windows / partial COM).
+        if not result["sessions"]:
+            for session in AudioUtilities.GetAllSessions():
+                try:
+                    default_name = (result["default_endpoint"] or {}).get("name")
+                    default_id = (result["default_endpoint"] or {}).get("id")
+                    result["sessions"].append(
+                        _session_payload(session, default_name, default_id)
+                    )
+                except Exception as exc:
+                    errors.append(_error("Application audio session", exc))
     except Exception as exc:
         errors.append(_error("Windows Core Audio", exc))
     finally:
@@ -231,7 +291,7 @@ def collect_snapshot() -> dict[str, Any]:
     errors.extend(core_errors)
 
     snapshot: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "system": {
             "platform": platform.platform(),
@@ -357,6 +417,16 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                 "Unmute the output and raise its volume in Sound settings.",
             )
         )
+    elif isinstance(master_volume, (int, float)) and master_volume < 0.20:
+        findings.append(
+            _finding(
+                "warning",
+                "master-volume-low",
+                "Master headphone volume is low",
+                f"Master volume is {master_volume * 100:.0f}% and is not muted.",
+                "Raise the headphone volume in Sound settings or on the headset.",
+            )
+        )
     elif isinstance(master_volume, (int, float)):
         findings.append(
             _finding(
@@ -418,11 +488,19 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
         if session.get("muted")
         or float(session.get("volume", 1.0) or 0.0) <= 0.02
     ]
+
+    def _session_label(session: dict[str, Any]) -> str:
+        volume_pct = float(session.get("volume", 0) or 0) * 100
+        label = f"{session.get('process')} ({volume_pct:.0f}%)"
+        output = session.get("output_device")
+        if output:
+            label = f"{label} on {output}"
+        if session.get("muted"):
+            label = f"{label}, muted"
+        return label
+
     if silent_browser_sessions:
-        labels = ", ".join(
-            f"{session.get('process')} ({float(session.get('volume', 0)) * 100:.0f}%)"
-            for session in silent_browser_sessions
-        )
+        labels = ", ".join(_session_label(session) for session in silent_browser_sessions)
         findings.append(
             _finding(
                 "critical",
@@ -433,10 +511,7 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
             )
         )
     elif browser_sessions:
-        labels = ", ".join(
-            f"{session.get('process')} ({float(session.get('volume', 0)) * 100:.0f}%)"
-            for session in browser_sessions
-        )
+        labels = ", ".join(_session_label(session) for session in browser_sessions)
         findings.append(
             _finding(
                 "ok",
@@ -454,6 +529,57 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                 "No browser audio session was visible",
                 "Browsers usually appear only after a tab starts playing sound.",
                 "Start a YouTube video, leave it playing, and select Scan again.",
+            )
+        )
+
+    default_endpoint_name = core_name or (endpoint.get("name") if endpoint else None)
+    mismatched_browser_sessions = [
+        session
+        for session in browser_sessions
+        if session.get("output_device")
+        and default_endpoint_name
+        and not likely_same_device(
+            str(session.get("output_device")), str(default_endpoint_name)
+        )
+    ]
+    browsers_on_default = [
+        session
+        for session in browser_sessions
+        if session.get("output_device")
+        and default_endpoint_name
+        and likely_same_device(
+            str(session.get("output_device")), str(default_endpoint_name)
+        )
+    ]
+
+    def _is_active_session(session: dict[str, Any]) -> bool:
+        state = str(session.get("state", "")).casefold()
+        return state in {"1", "active", "audiosessionstate.active"}
+
+    active_mismatched = [
+        session
+        for session in mismatched_browser_sessions
+        if _is_active_session(session)
+    ]
+    # Warn when live audio is clearly on the wrong device, or when every
+    # browser path is off the default headphones (stale dual registrations alone
+    # are common and not enough to alarm).
+    should_warn_mismatch = bool(active_mismatched) or (
+        bool(mismatched_browser_sessions) and not browsers_on_default
+    )
+    if should_warn_mismatch:
+        report_sessions = active_mismatched or mismatched_browser_sessions
+        labels = ", ".join(_session_label(session) for session in report_sessions)
+        findings.append(
+            _finding(
+                "warning",
+                "browser-output-mismatch",
+                "A browser is playing through a different output",
+                (
+                    f"Default headphones: {default_endpoint_name}. "
+                    f"Browser path(s): {labels}."
+                ),
+                "Open Volume mixer and set the browser Output to Default or your headphones.",
             )
         )
 

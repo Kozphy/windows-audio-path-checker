@@ -128,18 +128,20 @@ class AudioCheckerApp:
         self.results.pack(side=LEFT, fill=BOTH, expand=True)
         result_scroll.pack(side=RIGHT, fill=Y)
 
-        session_columns = ("process", "volume", "muted", "state")
+        session_columns = ("process", "volume", "muted", "output", "state")
         self.sessions = ttk.Treeview(
             sessions_tab, columns=session_columns, show="headings"
         )
         self.sessions.heading("process", text="Application")
         self.sessions.heading("volume", text="App volume")
         self.sessions.heading("muted", text="Muted")
+        self.sessions.heading("output", text="Output device")
         self.sessions.heading("state", text="Session state")
-        self.sessions.column("process", width=330)
-        self.sessions.column("volume", width=120)
-        self.sessions.column("muted", width=100)
-        self.sessions.column("state", width=260)
+        self.sessions.column("process", width=180)
+        self.sessions.column("volume", width=90)
+        self.sessions.column("muted", width=70)
+        self.sessions.column("output", width=280)
+        self.sessions.column("state", width=160)
         session_scroll = ttk.Scrollbar(
             sessions_tab, orient="vertical", command=self.sessions.yview
         )
@@ -220,6 +222,7 @@ class AudioCheckerApp:
                     session.get("process", ""),
                     f"{float(session.get('volume', 0)) * 100:.0f}%",
                     "Yes" if session.get("muted") else "No",
+                    session.get("output_device") or "(unknown)",
                     session.get("state", ""),
                 ),
             )
@@ -303,27 +306,51 @@ class AudioCheckerApp:
             (
                 "This will unmute recognized browser sessions and raise any "
                 "browser session below 50% to 50%.\n\n"
+                "After that, the checker will rescan to verify the fix.\n"
                 "You can change the volume again in Windows Volume mixer."
             ),
         ):
             return
+        self.scan_button.configure(state="disabled")
+        self.status.set("Adjusting browser sessions and rescanning…")
+        threading.Thread(target=self._unmute_worker, daemon=True).start()
+
+    def _unmute_worker(self) -> None:
         try:
             changed = unmute_silent_browser_sessions()
-            if changed:
-                messagebox.showinfo(
-                    "Browser audio adjusted", "\n".join(changed)
+            snapshot = collect_snapshot()
+            self.root.after(
+                0, lambda: self._after_unmute(changed, snapshot)
+            )
+        except Exception as exc:
+            self.root.after(
+                0, lambda: self._show_error("Could not adjust browser sessions", exc)
+            )
+
+    def _after_unmute(self, changed: list[str], snapshot: dict) -> None:
+        self._display_snapshot(snapshot)
+        still_silent = any(
+            finding.get("code") == "browser-session-silent"
+            for finding in snapshot.get("findings", [])
+        )
+        if changed:
+            body = "\n".join(changed)
+            if still_silent:
+                body += (
+                    "\n\nRescan: a browser session is still silent. "
+                    "Check its Output device in Volume mixer."
                 )
             else:
-                messagebox.showinfo(
-                    "No change needed",
-                    (
-                        "No recognized browser session was muted or below 50%. "
-                        "Start YouTube playback and scan again."
-                    ),
-                )
-            self.start_scan()
-        except Exception as exc:
-            self._show_error("Could not adjust browser sessions", exc)
+                body += "\n\nRescan: no silent browser sessions remain."
+            messagebox.showinfo("Browser audio adjusted", body)
+        else:
+            messagebox.showinfo(
+                "No change needed",
+                (
+                    "No recognized browser session was muted or below 50%. "
+                    "Start YouTube playback and scan again."
+                ),
+            )
 
     def save_current_report(self) -> None:
         if not self.snapshot:

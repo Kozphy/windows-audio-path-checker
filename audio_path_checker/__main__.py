@@ -5,7 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-from .diagnostics import collect_snapshot, save_report
+from .diagnostics import (
+    collect_snapshot,
+    save_report,
+    unmute_silent_browser_sessions,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +24,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scan in the terminal instead of opening the friendly window.",
     )
     parser.add_argument(
+        "--unmute-browsers",
+        action="store_true",
+        help=(
+            "Unmute recognized browser sessions, raise low volumes to 50%%, "
+            "then rescan and print the verified report (implies --no-gui)."
+        ),
+    )
+    parser.add_argument(
         "--report",
         type=Path,
         help="Save a JSON report to this path.",
@@ -29,11 +41,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.no_gui:
+    if not args.no_gui and not args.unmute_browsers:
         from .gui import main as gui_main
 
         gui_main()
         return 0
+
+    if args.unmute_browsers:
+        changed = unmute_silent_browser_sessions()
+        if changed:
+            print("Browser audio adjusted:")
+            for item in changed:
+                print(f"  - {item}")
+        else:
+            print(
+                "No recognized browser session was muted or below 50%. "
+                "Start YouTube playback and scan again."
+            )
+        print("Rescanning to verify…")
 
     snapshot = collect_snapshot()
     if args.report:
