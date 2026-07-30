@@ -101,257 +101,493 @@ def _collect_portaudio() -> tuple[dict[str, Any], list[dict[str, str]]]:
         host_apis = list(sd.query_hostapis())
         result["host_apis"] = [
             {
-                ï^ú¶‰žËkºwµçheading("details", text="What was found")
-        self.results.heading("next", text="What to do")
-        self.results.column("severity", width=85, stretch=False)
-        self.results.column("check", width=230)
-        self.results.column("details", width=310)
-        self.results.column("next", width=330)
-        self.results.tag_configure("critical", foreground="#b42318")
-        self.results.tag_configure("warning", foreground="#9a6700")
-        self.results.tag_configure("ok", foreground="#067647")
-        self.results.tag_configure("info", foreground="#175cd3")
-        result_scroll = ttk.Scrollbar(
-            results_tab, orient="vertical", command=self.results.yview
-        )
-        self.results.configure(yscrollcommand=result_scroll.set)
-        self.results.pack(side=LEFT, fill=BOTH, expand=True)
-        result_scroll.pack(side=RIGHT, fill=Y)
+                "index": index,
+                "name": str(api.get("name", "")),
+                "default_output_device": int(api.get("default_output_device", -1)),
+            }
+            for index, api in enumerate(host_apis)
+        ]
 
-        session_columns = ("process", "volume", "muted", "state")
-        self.sessions = ttk.Treeview(
-            sessions_tab, columns=session_columns, show="headings"
-        )
-        self.sessions.heading("process", text="Application")
-        self.sessions.heading("volume", text="App volume")
-        self.sessions.heading("muted", text="Muted")
-        self.sessions.heading("state", text="Session state")
-        self.sessions.column("process", width=330)
-        self.sessions.column("volume", width=120)
-        self.sessions.column("muted", width=100)
-        self.sessions.column("state", width=260)
-        session_scroll = ttk.Scrollbar(
-            sessions_tab, orient="vertical", command=self.sessions.yview
-        )
-        self.sessions.configure(yscrollcommand=session_scroll.set)
-        self.sessions.pack(side=LEFT, fill=BOTH, expand=True)
-        session_scroll.pack(side=RIGHT, fill=Y)
-
-        self.report_text = tk.Text(
-            report_tab,
-            wrap="none",
-            font=("Consolas", 9),
-            background="#101828",
-            foreground="#f2f4f7",
-            insertbackground="#f2f4f7",
-        )
-        report_y = ttk.Scrollbar(
-            report_tab, orient="vertical", command=self.report_text.yview
-        )
-        report_x = ttk.Scrollbar(
-            report_tab, orient="horizontal", command=self.report_text.xview
-        )
-        self.report_text.configure(
-            yscrollcommand=report_y.set, xscrollcommand=report_x.set
-        )
-        self.report_text.grid(row=0, column=0, sticky="nsew")
-        report_y.grid(row=0, column=1, sticky="ns")
-        report_x.grid(row=1, column=0, sticky="ew")
-        report_tab.rowconfigure(0, weight=1)
-        report_tab.columnconfigure(0, weight=1)
-
-        self.status = tk.StringVar(value="Ready to scan.")
-        ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(8, 0))
-        root.after(300, self.start_scan)
-
-    def start_scan(self) -> None:
-        self.scan_button.configure(state="disabled")
-        self.status.set("Scanning playback devices and app audio sessionsâ€¦")
-        threading.Thread(target=self._scan_worker, daemon=True).start()
-
-    def _scan_worker(self) -> None:
+        default_pair = sd.default.device
         try:
-            snapshot = collect_snapshot()
-            self.root.after(0, lambda: self._display_snapshot(snapshot))
-        except Exception as exc:
-            self.root.after(0, lambda: self._show_error("Scan failed", exc))
+            default_output_index = int(default_pair[1])
+        except (TypeError, ValueError, IndexError):
+            default_output_index = None
+        if default_output_index is not None and default_output_index < 0:
+            default_output_index = None
+        result["default_output_index"] = default_output_index
 
-    def _display_snapshot(self, snapshot: dict) -> None:
-        self.snapshot = snapshot
-        for item in self.results.get_children():
-            self.results.delete(item)
-        labels = {
-            "critical": "FIX",
-            "warning": "CHECK",
-            "ok": "OK",
-            "info": "INFO",
+        for index, device in enumerate(sd.query_devices()):
+            max_output_channels = int(device.get("max_output_channels", 0))
+            if max_output_channels <= 0:
+                continue
+            host_index = int(device.get("hostapi", -1))
+            host_name = (
+                str(host_apis[host_index].get("name", "Unknown"))
+                if 0 <= host_index < len(host_apis)
+                else "Unknown"
+            )
+            item = {
+                "index": index,
+                "name": str(device.get("name", f"Device {index}")),
+                "host_api": host_name,
+                "max_output_channels": max_output_channels,
+                "default_sample_rate": int(float(device.get("default_samplerate", 0))),
+                "is_default": index == default_output_index,
+            }
+            result["output_devices"].append(item)
+            if item["is_default"]:
+                result["default_output_name"] = item["name"]
+    except Exception as exc:
+        errors.append(_error("Playback devices", exc))
+    return result, errors
+
+
+def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
+    result: dict[str, Any] = {
+        "default_endpoint": None,
+        "master_volume": None,
+        "master_muted": None,
+        "sessions": [],
+    }
+    errors: list[dict[str, str]] = []
+    if sys.platform != "win32":
+        return result, errors
+
+    _, co_uninitialize = _init_com()
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        speakers = AudioUtilities.GetSpeakers()
+        result["default_endpoint"] = {
+            "name": str(getattr(speakers, "FriendlyName", "") or ""),
+            "id": str(getattr(speakers, "id", "") or ""),
         }
-        for finding in snapshot.get("findings", []):
-            severity = finding.get("severity", "info")
-            self.results.insert(
-                "",
-                END,
-                values=(
-                    labels.get(severity, severity.upper()),
-                    finding.get("title", ""),
-                    finding.get("detail", ""),
-                    finding.get("action", ""),
-                ),
-                tags=(severity,),
-            )
 
-        for item in self.sessions.get_children():
-            self.sessions.delete(item)
-        for session in snapshot.get("core_audio", {}).get("sessions", []):
-            self.sessions.insert(
-                "",
-                END,
-                values=(
-                    session.get("process", ""),
-                    f"{float(session.get('volume', 0)) * 100:.0f}%",
-                    "Yes" if session.get("muted") else "No",
-                    session.get("state", ""),
-                ),
-            )
+        endpoint_volume = getattr(speakers, "EndpointVolume", None)
+        if endpoint_volume is None:
+            try:
+                from ctypes import POINTER, cast
 
-        self.report_text.configure(state="normal")
-        self.report_text.delete("1.0", END)
-        self.report_text.insert(
-            "1.0", json.dumps(snapshot, indent=2, ensure_ascii=False)
-        )
-        self.report_text.configure(state="disabled")
+                from comtypes import CLSCTX_ALL
+                from pycaw.pycaw import IAudioEndpointVolume
 
-        devices = output_device_choices(snapshot)
-        self.device_by_label.clear()
-        values: list[str] = []
-        for device in devices:
-            default_mark = " â€” Windows default" if device.get("is_default") else ""
-            label = (
-                f"{device.get('name')} [{device.get('host_api')}]"
-                f"{default_mark}"
-            )
-            values.append(label)
-            self.device_by_label[label] = int(device["index"])
-        self.device_choice["values"] = values
-        if values:
-            default_position = next(
-                (
-                    index for index, device in enumerate(devices)
-                    if device.get("is_default")
-                ),
-                0,
-            )
-            self.device_choice.current(default_position)
-
-        critical_count = sum(
-            finding.get("severity") == "critical"
-            for finding in snapshot.get("findings", [])
-        )
-        warning_count = sum(
-            finding.get("severity") == "warning"
-            for finding in snapshot.get("findings", [])
-        )
-        self.status.set(
-            f"Scan complete: {critical_count} fix item(s), "
-            f"{warning_count} item(s) to check."
-        )
-        self.scan_button.configure(state="normal")
-
-    def play_tone(self) -> None:
-        label = self.device_choice.get()
-        if not label:
-            messagebox.showwarning(
-                "No output", "Scan first, then choose a playback output."
-            )
-            return
-        try:
-            self.status.set(play_test_tone(self.device_by_label[label]))
-        except Exception as exc:
-            self._show_error("The app sound test failed", exc)
-
-    def stop_tone(self) -> None:
-        try:
-            stop_test_tone()
-            self.status.set("Sound test stopped.")
-        except Exception as exc:
-            self._show_error("Could not stop the sound test", exc)
-
-    def open_browser_test(self) -> None:
-        test_page = Path(__file__).with_name("browser_test.html").resolve()
-        if not webbrowser.open(test_page.as_uri()):
-            messagebox.showinfo(
-                "Browser test",
-                f"Open this file in your browser:\n{test_page}",
-            )
-        self.status.set(
-            "Browser test opened. Select Play browser test sound on that page."
-        )
-
-    def unmute_browsers(self) -> None:
-        if not messagebox.askyesno(
-            "Unmute browser sessions?",
-            (
-                "This will unmute recognized browser sessions and raise any "
-                "browser session below 50% to 50%.\n\n"
-                "You can change the volume again in Windows Volume mixer."
-            ),
-        ):
-            return
-        try:
-            changed = unmute_silent_browser_sessions()
-            if changed:
-                messagebox.showinfo(
-                    "Browser audio adjusted", "\n".join(changed)
+                interface = speakers.Activate(
+                    IAudioEndpointVolume._iid_, CLSCTX_ALL, None
                 )
-            else:
-                messagebox.showinfo(
-                    "No change needed",
-                    (
-                        "No recognized browser session was muted or below 50%. "
-                        "Start YouTube playback and scan again."
-                    ),
+                endpoint_volume = cast(interface, POINTER(IAudioEndpointVolume))
+            except Exception as exc:
+                errors.append(_error("Master endpoint volume", exc))
+
+        if endpoint_volume is not None:
+            try:
+                result["master_volume"] = round(
+                    float(endpoint_volume.GetMasterVolumeLevelScalar()), 4
                 )
-            self.start_scan()
-        except Exception as exc:
-            self._show_error("Could not adjust browser sessions", exc)
+                result["master_muted"] = bool(endpoint_volume.GetMute())
+            except Exception as exc:
+                errors.append(_error("Master endpoint volume", exc))
 
-    def save_current_report(self) -> None:
-        if not self.snapshot:
-            messagebox.showwarning("No report", "Run a scan first.")
-            return
-        default_name = f"audio-report-{datetime.now():%Y%m%d-%H%M%S}.json"
-        path = filedialog.asksaveasfilename(
-            title="Save audio diagnostic report",
-            defaultextension=".json",
-            initialfile=default_name,
-            filetypes=[("JSON report", "*.json")],
+        for session in AudioUtilities.GetAllSessions():
+            try:
+                simple_volume = session.SimpleAudioVolume
+                process_name = _friendly_process_name(session)
+                result["sessions"].append(
+                    {
+                        "process": process_name,
+                        "pid": int(getattr(session, "ProcessId", 0) or 0),
+                        "display_name": str(
+                            getattr(session, "DisplayName", "") or ""
+                        ),
+                        "volume": round(
+                            float(simple_volume.GetMasterVolume()), 4
+                        ),
+                        "muted": bool(simple_volume.GetMute()),
+                        "state": str(getattr(session, "State", "unknown")),
+                        "is_browser": process_name.casefold() in BROWSER_PROCESSES,
+                    }
+                )
+            except Exception as exc:
+                errors.append(_error("Application audio session", exc))
+    except Exception as exc:
+        errors.append(_error("Windows Core Audio", exc))
+    finally:
+        if co_uninitialize is not None:
+            try:
+                co_uninitialize()
+            except Exception:
+                pass
+    return result, errors
+
+
+def collect_snapshot() -> dict[str, Any]:
+    """Collect a read-only snapshot of the Windows playback path."""
+    errors: list[dict[str, str]] = []
+    services, service_errors = _collect_audio_services()
+    portaudio, portaudio_errors = _collect_portaudio()
+    core_audio, core_errors = _collect_core_audio()
+    errors.extend(service_errors)
+    errors.extend(portaudio_errors)
+    errors.extend(core_errors)
+
+    snapshot: dict[str, Any] = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "system": {
+            "platform": platform.platform(),
+            "windows_release": platform.release(),
+            "windows_version": platform.version(),
+            "python_version": platform.python_version(),
+            "is_windows": sys.platform == "win32",
+        },
+        "services": services,
+        "portaudio": portaudio,
+        "core_audio": core_audio,
+        "errors": errors,
+    }
+    snapshot["findings"] = analyze_snapshot(snapshot)
+    return snapshot
+
+
+def _finding(
+    severity: str, code: str, title: str, detail: str, action: str
+) -> dict[str, str]:
+    return {
+        "severity": severity,
+        "code": code,
+        "title": title,
+        "detail": detail,
+        "action": action,
+    }
+
+
+def _device_words(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    ignored = {
+        "audio",
+        "default",
+        "device",
+        "headphones",
+        "high",
+        "output",
+        "primary",
+        "sound",
+        "speakers",
+        "stereo",
+    }
+    words = {
+        word
+        for word in re.findall(r"[a-z0-9]+", value.casefold())
+        if len(word) > 1 and word not in ignored
+    }
+    return words
+
+
+def likely_same_device(first: str | None, second: str | None) -> bool:
+    if not first or not second:
+        return True
+    first_folded = first.casefold()
+    second_folded = second.casefold()
+    if first_folded in second_folded or second_folded in first_folded:
+        return True
+    first_words = _device_words(first)
+    second_words = _device_words(second)
+    if not first_words or not second_words:
+        return True
+    overlap = first_words & second_words
+    return len(overlap) >= min(2, len(first_words), len(second_words))
+
+
+def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    system = snapshot.get("system", {})
+    services = snapshot.get("services", [])
+    portaudio = snapshot.get("portaudio", {})
+    core_audio = snapshot.get("core_audio", {})
+
+    if not system.get("is_windows", False):
+        findings.append(
+            _finding(
+                "critical",
+                "unsupported-platform",
+                "This checker needs Windows",
+                "Windows Core Audio is not available on this operating system.",
+                "Run the checker on the Windows computer with the silent headphones.",
+            )
         )
-        if not path:
-            return
-        try:
-            saved = save_report(self.snapshot, path)
-            self.status.set(f"Report saved to {saved}.")
-        except Exception as exc:
-            self._show_error("Could not save the report", exc)
 
-    def _open_settings(self, uri: str) -> None:
-        try:
-            open_windows_settings(uri)
-        except Exception as exc:
-            self._show_error("Could not open Windows Settings", exc)
+    stopped_services = [
+        service.get("friendly_name", service.get("name", "Audio service"))
+        for service in services
+        if str(service.get("status", "")).casefold() != "running"
+    ]
+    if stopped_services:
+        findings.append(
+            _finding(
+                "critical",
+                "audio-service-stopped",
+                "A Windows audio service is not running",
+                ", ".join(stopped_services),
+                "Open Services and restart Windows Audio and Windows Audio Endpoint Builder.",
+            )
+        )
+    elif services:
+        findings.append(
+            _finding(
+                "ok",
+                "audio-services-running",
+                "Windows audio services are running",
+                "The core Windows audio services responded normally.",
+                "No service action is needed.",
+            )
+        )
 
-    def _show_error(self, title: str, exc: BaseException) -> None:
-        self.scan_button.configure(state="normal")
-        self.status.set(f"{title}: {exc}")
-        messagebox.showerror(title, str(exc))
+    master_muted = core_audio.get("master_muted")
+    master_volume = core_audio.get("master_volume")
+    if master_muted or (
+        isinstance(master_volume, (int, float)) and master_volume <= 0.02
+    ):
+        findings.append(
+            _finding(
+                "critical",
+                "master-muted",
+                "The headphone output is muted or nearly silent",
+                f"Master volume: {float(master_volume or 0) * 100:.0f}%; muted: {bool(master_muted)}.",
+                "Unmute the output and raise its volume in Sound settings.",
+            )
+        )
+    elif isinstance(master_volume, (int, float)):
+        findings.append(
+            _finding(
+                "ok",
+                "master-volume-ok",
+                "Master headphone volume is available",
+                f"Master volume is {master_volume * 100:.0f}% and is not muted.",
+                "No master-volume action is needed.",
+            )
+        )
+
+    output_devices = portaudio.get("output_devices", [])
+    if not output_devices:
+        findings.append(
+            _finding(
+                "critical",
+                "no-output-devices",
+                "No playback device was available to normal apps",
+                "The app-level playback library could not see an output device.",
+                "Reconnect the headphones, then update or reinstall the audio driver.",
+            )
+        )
+    else:
+        default_name = portaudio.get("default_output_name")
+        findings.append(
+            _finding(
+                "ok",
+                "app-output-available",
+                "Normal apps can see a playback device",
+                f"Default app output: {default_name or 'Windows default'}.",
+                "Use the Test app sound button to verify this path.",
+            )
+        )
+
+    endpoint = core_audio.get("default_endpoint") or {}
+    core_name = endpoint.get("name")
+    app_name = portaudio.get("default_output_name")
+    if core_name and app_name and not likely_same_device(core_name, app_name):
+        findings.append(
+            _finding(
+                "warning",
+                "default-device-mismatch",
+                "Windows and normal apps may be using different outputs",
+                f"Windows endpoint: {core_name}; app endpoint: {app_name}.",
+                "Open Volume mixer and select the headphones for the affected app.",
+            )
+        )
+
+    sessions = core_audio.get("sessions", [])
+    browser_sessions = [
+        session
+        for session in sessions
+        if session.get("is_browser")
+        or str(session.get("process", "")).casefold() in BROWSER_PROCESSES
+    ]
+    silent_browser_sessions = [
+        session
+        for session in browser_sessions
+        if session.get("muted")
+        or float(session.get("volume", 1.0) or 0.0) <= 0.02
+    ]
+    if silent_browser_sessions:
+        labels = ", ".join(
+            f"{session.get('process')} ({float(session.get('volume', 0)) * 100:.0f}%)"
+            for session in silent_browser_sessions
+        )
+        findings.append(
+            _finding(
+                "critical",
+                "browser-session-silent",
+                "A browser audio session is muted or at zero",
+                labels,
+                "Use Unmute browser sessions, then retry YouTube.",
+            )
+        )
+    elif browser_sessions:
+        labels = ", ".join(
+            f"{session.get('process')} ({float(session.get('volume', 0)) * 100:.0f}%)"
+            for session in browser_sessions
+        )
+        findings.append(
+            _finding(
+                "ok",
+                "browser-session-visible",
+                "Windows can see the browser audio session",
+                labels,
+                "If it is still silent, check its Output device in Volume mixer.",
+            )
+        )
+    else:
+        findings.append(
+            _finding(
+                "warning",
+                "browser-session-missing",
+                "No browser audio session was visible",
+                "Browsers usually appear only after a tab starts playing sound.",
+                "Start a YouTube video, leave it playing, and select Scan again.",
+            )
+        )
+
+    if len(output_devices) > 1:
+        findings.append(
+            _finding(
+                "info",
+                "multiple-outputs",
+                "More than one playback path is installed",
+                f"{len(output_devices)} app-level outputs were found across Windows audio APIs.",
+                "This is normal, but it makes per-app routing the most likely cause.",
+            )
+        )
+
+    errors = snapshot.get("errors", [])
+    if errors:
+        findings.append(
+            _finding(
+                "warning",
+                "partial-scan",
+                "Part of the scan could not be completed",
+                "; ".join(
+                    f"{item.get('source')}: {item.get('message')}" for item in errors[:3]
+                ),
+                "Save the report and include it when opening a GitHub issue.",
+            )
+        )
+
+    return sorted(
+        findings,
+        key=lambda item: (
+            SEVERITY_ORDER.get(item.get("severity", "info"), 99),
+            item.get("title", ""),
+        ),
+    )
 
 
-def main() -> None:
-    root = tk.Tk()
-    AudioCheckerApp(root)
-    root.mainloop()
+def output_device_choices(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    devices = snapshot.get("portaudio", {}).get("output_devices", [])
+    wasapi = [
+        device
+        for device in devices
+        if "wasapi" in str(device.get("host_api", "")).casefold()
+    ]
+    return wasapi or devices
 
 
-if __name__ == "__main__":
-    main()
+def play_test_tone(device_index: int | None = None, seconds: float = 2.0) -> str:
+    """Play a quiet stereo test tone through an app-level output."""
+    import numpy as np
+    import sounddevice as sd
+
+    device = sd.query_devices(device_index, "output")
+    sample_rate = int(float(device.get("default_samplerate", 44100)))
+    sample_rate = sample_rate if sample_rate > 0 else 44100
+    channels = 2 if int(device.get("max_output_channels", 1)) >= 2 else 1
+    frame_count = int(sample_rate * seconds)
+    time_axis = np.arange(frame_count, dtype=np.float64) / sample_rate
+    fade_frames = max(1, int(sample_rate * 0.04))
+    envelope = np.ones(frame_count, dtype=np.float64)
+    fade = np.linspace(0.0, 1.0, fade_frames, endpoint=True)
+    envelope[:fade_frames] = fade
+    envelope[-fade_frames:] = fade[::-1]
+
+    left = 0.12 * np.sin(2 * np.pi * 440.0 * time_axis) * envelope
+    if channels == 2:
+        right = 0.12 * np.sin(2 * np.pi * 660.0 * time_axis) * envelope
+        data = np.column_stack((left, right)).astype(np.float32)
+    else:
+        data = left.astype(np.float32)
+
+    sd.stop()
+    sd.play(data, sample_rate, device=device_index, blocking=False)
+    return (
+        f"Playing a {seconds:.0f}-second app sound through "
+        f"{device.get('name', 'the selected output')}."
+    )
+
+
+def stop_test_tone() -> None:
+    import sounddevice as sd
+
+    sd.stop()
+
+
+def unmute_silent_browser_sessions(minimum_volume: float = 0.5) -> list[str]:
+    """Unmute only recognized browser sessions and raise very low ones."""
+    if sys.platform != "win32":
+        raise RuntimeError("Browser audio sessions are available only on Windows.")
+
+    changed: list[str] = []
+    _, co_uninitialize = _init_com()
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        for session in AudioUtilities.GetAllSessions():
+            process_name = _friendly_process_name(session)
+            if process_name.casefold() not in BROWSER_PROCESSES:
+                continue
+            simple_volume = session.SimpleAudioVolume
+            was_muted = bool(simple_volume.GetMute())
+            old_volume = float(simple_volume.GetMasterVolume())
+            if was_muted:
+                simple_volume.SetMute(0, None)
+            if old_volume < minimum_volume:
+                simple_volume.SetMasterVolume(minimum_volume, None)
+            if was_muted or old_volume < minimum_volume:
+                changed.append(
+                    f"{process_name}: mute={was_muted}, "
+                    f"{old_volume * 100:.0f}% -> {max(old_volume, minimum_volume) * 100:.0f}%"
+                )
+    finally:
+        if co_uninitialize is not None:
+            try:
+                co_uninitialize()
+            except Exception:
+                pass
+    return changed
+
+
+def open_windows_settings(uri: str) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("Windows Settings links are available only on Windows.")
+    os.startfile(uri)  # type: ignore[attr-defined]
+
+
+def save_report(snapshot: dict[str, Any], path: str | Path) -> Path:
+    destination = Path(path)
+    destination.write_text(
+        json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return destination
+
+
+def browser_processes() -> Iterable[str]:
+    return sorted(BROWSER_PROCESSES)
 
