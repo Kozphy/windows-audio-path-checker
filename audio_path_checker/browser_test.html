@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Windows Audio Path Checker — Browser Test</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    body {
+      display: grid;
+      min-height: 100vh;
+      margin: 0;
+      place-items: center;
+      background: #101828;
+      color: #f9fafb;
+    }
+    main {
+      width: min(620px, calc(100% - 48px));
+      padding: 32px;
+      border: 1px solid #344054;
+      border-radius: 18px;
+      background: #1d2939;
+      box-shadow: 0 18px 50px rgb(0 0 0 / 25%);
+    }
+    h1 { margin-top: 0; font-size: 1.8rem; }
+    p { line-height: 1.55; color: #d0d5dd; }
+    button {
+      width: 100%;
+      margin: 16px 0;
+      padding: 14px 18px;
+      border: 0;
+      border-radius: 10px;
+      background: #7f56d9;
+      color: white;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #6941c6; }
+    #status {
+      min-height: 1.5em;
+      color: #b9e6fe;
+      font-weight: 600;
+    }
+    ol { line-height: 1.6; color: #d0d5dd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Browser audio test</h1>
+    <p>
+      This sound travels through the same browser audio session used by
+      YouTube. It does not use the Windows Settings test path.
+    </p>
+    <button id="play" type="button">Play browser test sound</button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <ol>
+      <li>If you hear it, the browser path works; check the YouTube tab mute and player volume.</li>
+      <li>If the Python app test works but this is silent, check this browser in Windows Volume mixer.</li>
+      <li>Leave this page playing briefly, then select <strong>Scan again</strong> in the checker.</li>
+    </ol>
+  </main>
+  <script>
+    const button = document.querySelector("#play");
+    const status = document.querySelector("#status");
+
+    button.addEventListener("click", async () => {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      const context = new AudioContext();
+      await context.resume();
+
+      const master = context.createGain();
+      master.gain.value = 0.12;
+      master.connect(context.destination);
+
+      const now = context.currentTime;
+      [440, 660].forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(1, now + 0.04);
+        gain.gain.setValueAtTime(1, now + 1.9);
+        gain.gain.linearRampToValueAtTime(0, now + 2);
+        oscillator.connect(gain).connect(master);
+        oscillator.start(now + index * 0.04);
+        oscillator.stop(now + 2.05);
+      });
+
+      status.textContent = "Playing for two seconds…";
+      window.setTimeout(() => {
+        status.textContent = "Test complete. Did you hear it?";
+        context.close();
+      }, 2200);
+    });
+  </script>
+</body>
+</html>
+

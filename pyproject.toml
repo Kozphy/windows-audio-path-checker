@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windows-audio-path-checker"
+version = "0.1.0"
+description = "Diagnose why Windows test sounds work while browsers and other apps are silent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Zixsa" }]
+keywords = ["windows", "audio", "headphones", "diagnostics", "wasapi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+  "numpy>=1.26",
+  "psutil>=5.9",
+  "pycaw>=20240210; platform_system == 'Windows'",
+  "sounddevice>=0.5",
+]
+
+[project.gui-scripts]
+windows-audio-checker = "audio_path_checker.gui:main"
+
+[project.scripts]
+windows-audio-checker-cli = "audio_path_checker.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Kozphy/windows-audio-path-checker"
+Issues = "https://github.com/Kozphy/windows-audio-path-checker/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+audio_path_checker = ["browser_test.html"]
+
