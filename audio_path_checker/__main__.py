@@ -18,6 +18,7 @@ from .diagnostics import (
     save_report,
     unmute_silent_browser_sessions,
 )
+from .inference import enrich_snapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Save a JSON report to this path.",
     )
+    parser.add_argument(
+        "--root-causes",
+        action="store_true",
+        help="Print a compact ranked root-cause summary before the full JSON report.",
+    )
     return parser
 
 
@@ -88,10 +94,33 @@ def _select_bluetooth_target(snapshot: dict, name: str | None) -> dict | None:
     return preferred_bluetooth_repair_target(snapshot)
 
 
+def _scan() -> dict:
+    return enrich_snapshot(collect_snapshot())
+
+
+def _print_root_causes(snapshot: dict) -> None:
+    causes = ((snapshot.get("inference") or {}).get("root_causes") or [])
+    print("\nRanked root causes")
+    print("------------------")
+    if not causes:
+        print("No supported root cause could be ranked from the collected evidence.")
+        return
+    for index, cause in enumerate(causes, start=1):
+        probability = float(cause.get("probability") or 0.0)
+        print(
+            f"{index}. {cause.get('title')} "
+            f"[{cause.get('confidence')} confidence, {probability:.0%}]"
+        )
+        for evidence in cause.get("evidence") or []:
+            print(f"   evidence: {evidence}")
+        print(f"   action: {cause.get('recommendation')}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cli_mode = (
         args.no_gui
+        or args.root_causes
         or args.unmute_browsers
         or args.enable_bluetooth_adapter
         or args.repair_bluetooth is not None
@@ -119,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print("Rescanning to verify…")
 
-    snapshot = collect_snapshot()
+    snapshot = _scan()
 
     if args.enable_bluetooth_adapter:
         disabled = disabled_bluetooth_adapters(snapshot)
@@ -138,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if result.get("log"):
                 print(result["log"])
-            snapshot = collect_snapshot()
+            snapshot = _scan()
             if disabled_bluetooth_adapters(snapshot):
                 print(
                     "Adapter still disabled. Approve UAC and retry, "
@@ -176,10 +205,13 @@ def main(argv: list[str] | None = None) -> int:
                 "Reboot required. After reboot, re-pair the headset "
                 "in Bluetooth settings."
             )
-            snapshot = collect_snapshot()
+            snapshot = _scan()
 
     if args.report:
         save_report(snapshot, args.report)
+    if args.root_causes:
+        _print_root_causes(snapshot)
+
     # Escaping non-ASCII here keeps the CLI reliable in legacy Windows
     # consoles that still use a narrow code page. Saved reports remain UTF-8.
     print(json.dumps(snapshot, indent=2, ensure_ascii=True))
