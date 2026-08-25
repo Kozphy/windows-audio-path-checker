@@ -1,0 +1,440 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-07-30T16:27:15.953139+00:00",
+  "system": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "windows_release": "11",
+    "windows_version": "10.0.26200",
+    "python_version": "3.14.6",
+    "is_windows": true
+  },
+  "services": [
+    {
+      "name": "Audiosrv",
+      "friendly_name": "Windows Audio",
+      "status": "running",
+      "start_type": "automatic"
+    },
+    {
+      "name": "AudioEndpointBuilder",
+      "friendly_name": "Windows Audio Endpoint Builder",
+      "status": "running",
+      "start_type": "automatic"
+    }
+  ],
+  "portaudio": {
+    "default_output_index": 4,
+    "default_output_name": "Headphones (EDIFIER W800BT Pro)",
+    "output_devices": [
+      {
+        "index": 3,
+        "name": "Microsoft Sound Mapper - Output",
+        "host_api": "MME",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 4,
+        "name": "Headphones (EDIFIER W800BT Pro)",
+        "host_api": "MME",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": true
+      },
+      {
+        "index": 5,
+        "name": "XZ240Q (NVIDIA High Definition ",
+        "host_api": "MME",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 6,
+        "name": "27G2G8 (NVIDIA High Definition ",
+        "host_api": "MME",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 7,
+        "name": "喇叭 (Realtek(R) Audio)",
+        "host_api": "MME",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 11,
+        "name": "Primary Sound Driver",
+        "host_api": "Windows DirectSound",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 12,
+        "name": "Headphones (EDIFIER W800BT Pro)",
+        "host_api": "Windows DirectSound",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 13,
+        "name": "XZ240Q (NVIDIA High Definition Audio)",
+        "host_api": "Windows DirectSound",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 14,
+        "name": "27G2G8 (NVIDIA High Definition Audio)",
+        "host_api": "Windows DirectSound",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 15,
+        "name": "喇叭 (Realtek(R) Audio)",
+        "host_api": "Windows DirectSound",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 16,
+        "name": "Headphones (EDIFIER W800BT Pro)",
+        "host_api": "Windows WASAPI",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 17,
+        "name": "XZ240Q (NVIDIA High Definition Audio)",
+        "host_api": "Windows WASAPI",
+        "max_output_channels": 2,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 18,
+        "name": "27G2G8 (NVIDIA High Definition Audio)",
+        "host_api": "Windows WASAPI",
+        "max_output_channels": 2,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 19,
+        "name": "喇叭 (Realtek(R) Audio)",
+        "host_api": "Windows WASAPI",
+        "max_output_channels": 2,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 22,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(EDIFIER W800BT Pro))",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 1,
+        "default_sample_rate": 16000,
+        "is_default": false
+      },
+      {
+        "index": 24,
+        "name": "Speakers (Nahimic mirroring Wave Speaker)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 26,
+        "name": "Output (NVIDIA High Definition Audio)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 27,
+        "name": "Output (NVIDIA High Definition Audio)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 28,
+        "name": "Speakers (Nahimic Easy Surround)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 8,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 29,
+        "name": "Headphones 1 (Realtek HD Audio 2nd output with HAP)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 30,
+        "name": "Headphones 2 (Realtek HD Audio 2nd output with HAP)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 33,
+        "name": "Speakers 1 (Realtek HD Audio output with HAP)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 48000,
+        "is_default": false
+      },
+      {
+        "index": 34,
+        "name": "Speakers 2 (Realtek HD Audio output with HAP)",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 37,
+        "name": "Headphones ()",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 38,
+        "name": "Headphones ()",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 39,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(POLYWELL TM-086))",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 1,
+        "default_sample_rate": 8000,
+        "is_default": false
+      },
+      {
+        "index": 41,
+        "name": "Headphones ()",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 2,
+        "default_sample_rate": 44100,
+        "is_default": false
+      },
+      {
+        "index": 42,
+        "name": "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(EDIFIER WH700NB))",
+        "host_api": "Windows WDM-KS",
+        "max_output_channels": 1,
+        "default_sample_rate": 8000,
+        "is_default": false
+      }
+    ],
+    "host_apis": [
+      {
+        "index": 0,
+        "name": "MME",
+        "default_output_device": 4
+      },
+      {
+        "index": 1,
+        "name": "Windows DirectSound",
+        "default_output_device": 11
+      },
+      {
+        "index": 2,
+        "name": "Windows WASAPI",
+        "default_output_device": 16
+      },
+      {
+        "index": 3,
+        "name": "Windows WDM-KS",
+        "default_output_device": 37
+      }
+    ]
+  },
+  "core_audio": {
+    "default_endpoint": {
+      "name": "Headphones (EDIFIER W800BT Pro)",
+      "id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}"
+    },
+    "master_volume": 0.1496,
+    "master_muted": false,
+    "sessions": [
+      {
+        "process": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "pid": 0,
+        "display_name": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "volume": 0.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "Headphones (EDIFIER W800BT Pro)",
+        "output_device_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}",
+        "instance_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}|#%b{A9EF3FD9-4240-455E-A4D5-F2B3301887B2}|1%b#"
+      },
+      {
+        "process": "Wispr Flow.exe",
+        "pid": 13776,
+        "display_name": "",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "Headphones (EDIFIER W800BT Pro)",
+        "output_device_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}",
+        "instance_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}|\\Device\\HarddiskVolume3\\ProgramData\\dbdf0\\WisprFlow\\app-1.6.288\\Wispr Flow.exe%b{00000000-0000-0000-0000-000000000000}|1%b13776"
+      },
+      {
+        "process": "msedge.exe",
+        "pid": 18376,
+        "display_name": "",
+        "volume": 0.5,
+        "muted": false,
+        "state": "0",
+        "is_browser": true,
+        "output_device": "Headphones (EDIFIER W800BT Pro)",
+        "output_device_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}",
+        "instance_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}|\\Device\\HarddiskVolume3\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe%b{00000000-0000-0000-0000-000000000000}|1%b18376"
+      },
+      {
+        "process": "msrdc.exe",
+        "pid": 59736,
+        "display_name": "RemoteApp Audio",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "Headphones (EDIFIER W800BT Pro)",
+        "output_device_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}",
+        "instance_id": "{0.0.0.00000000}.{42131d49-a676-4af5-9240-51f50ea50ae6}|\\Device\\HarddiskVolume3\\Program Files\\WSL\\msrdc.exe%b{00000000-0000-0000-0000-000000000000}|1%b59736"
+      },
+      {
+        "process": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "pid": 0,
+        "display_name": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "XZ240Q (NVIDIA High Definition Audio)",
+        "output_device_id": "{0.0.0.00000000}.{8f121bd2-f791-4d27-9821-abf13945e6dd}",
+        "instance_id": "{0.0.0.00000000}.{8f121bd2-f791-4d27-9821-abf13945e6dd}|#%b{A9EF3FD9-4240-455E-A4D5-F2B3301887B2}|1%b#"
+      },
+      {
+        "process": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "pid": 0,
+        "display_name": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "27G2G8 (NVIDIA High Definition Audio)",
+        "output_device_id": "{0.0.0.00000000}.{95447f5e-9bb3-4dc1-bbc5-36410d0cbd97}",
+        "instance_id": "{0.0.0.00000000}.{95447f5e-9bb3-4dc1-bbc5-36410d0cbd97}|#%b{A9EF3FD9-4240-455E-A4D5-F2B3301887B2}|1%b#"
+      },
+      {
+        "process": "Wispr Flow.exe",
+        "pid": 13776,
+        "display_name": "",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "喇叭 (Realtek(R) Audio)",
+        "output_device_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}",
+        "instance_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}|\\Device\\HarddiskVolume3\\ProgramData\\dbdf0\\WisprFlow\\app-1.6.288\\Wispr Flow.exe%b{00000000-0000-0000-0000-000000000000}|1%b13776"
+      },
+      {
+        "process": "msedge.exe",
+        "pid": 18376,
+        "display_name": "",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": true,
+        "output_device": "喇叭 (Realtek(R) Audio)",
+        "output_device_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}",
+        "instance_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}|\\Device\\HarddiskVolume3\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe%b{00000000-0000-0000-0000-000000000000}|1%b18376"
+      },
+      {
+        "process": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "pid": 0,
+        "display_name": "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+        "volume": 1.0,
+        "muted": false,
+        "state": "0",
+        "is_browser": false,
+        "output_device": "喇叭 (Realtek(R) Audio)",
+        "output_device_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}",
+        "instance_id": "{0.0.0.00000000}.{a056a6ab-be88-46d7-8564-e51f1d45bb35}|#%b{A9EF3FD9-4240-455E-A4D5-F2B3301887B2}|1%b#"
+      }
+    ]
+  },
+  "errors": [],
+  "findings": [
+    {
+      "severity": "warning",
+      "code": "browser-output-mismatch",
+      "title": "A browser is playing through a different output",
+      "detail": "Default headphones: Headphones (EDIFIER W800BT Pro). Browser path(s): msedge.exe (100%) on 喇叭 (Realtek(R) Audio).",
+      "action": "Open Volume mixer and set the browser Output to Default or your headphones."
+    },
+    {
+      "severity": "warning",
+      "code": "master-volume-low",
+      "title": "Master headphone volume is low",
+      "detail": "Master volume is 15% and is not muted.",
+      "action": "Raise the headphone volume in Sound settings or on the headset."
+    },
+    {
+      "severity": "ok",
+      "code": "app-output-available",
+      "title": "Normal apps can see a playback device",
+      "detail": "Default app output: Headphones (EDIFIER W800BT Pro).",
+      "action": "Use the Test app sound button to verify this path."
+    },
+    {
+      "severity": "ok",
+      "code": "audio-services-running",
+      "title": "Windows audio services are running",
+      "detail": "The core Windows audio services responded normally.",
+      "action": "No service action is needed."
+    },
+    {
+      "severity": "ok",
+      "code": "browser-session-visible",
+      "title": "Windows can see the browser audio session",
+      "detail": "msedge.exe (50%) on Headphones (EDIFIER W800BT Pro), msedge.exe (100%) on 喇叭 (Realtek(R) Audio)",
+      "action": "If it is still silent, check its Output device in Volume mixer."
+    },
+    {
+      "severity": "info",
+      "code": "multiple-outputs",
+      "title": "More than one playback path is installed",
+      "detail": "28 app-level outputs were found across Windows audio APIs.",
+      "action": "This is normal, but it makes per-app routing the most likely cause."
+    }
+  ]
+}
