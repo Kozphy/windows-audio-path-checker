@@ -18,6 +18,10 @@ from .diagnostics import (
     stop_test_tone,
     unmute_silent_browser_sessions,
 )
+from .bluetooth import (
+    preferred_bluetooth_repair_target,
+    repair_bluetooth_pairing,
+)
 
 
 class AudioCheckerApp:
@@ -77,6 +81,24 @@ class AudioCheckerApp:
         ttk.Button(
             action_bar, text="Save report", command=self.save_current_report
         ).pack(side=RIGHT)
+
+        bt_bar = ttk.Frame(outer)
+        bt_bar.pack(fill=X, pady=(0, 10))
+        ttk.Button(
+            bt_bar,
+            text="Open Bluetooth settings",
+            command=lambda: self._open_settings("ms-settings:bluetooth"),
+        ).pack(side=LEFT)
+        ttk.Button(
+            bt_bar,
+            text="Repair Bluetooth pairing",
+            command=self.repair_bluetooth,
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Label(
+            bt_bar,
+            text="Use when audio works but the Bluetooth icon says disconnected, or Remove device is stuck/grayed out.",
+            wraplength=620,
+        ).pack(side=LEFT, padx=(12, 0))
 
         test_frame = ttk.LabelFrame(outer, text="Sound path tests", padding=10)
         test_frame.pack(fill=X, pady=(0, 10))
@@ -351,6 +373,77 @@ class AudioCheckerApp:
                     "Start YouTube playback and scan again."
                 ),
             )
+
+    def repair_bluetooth(self) -> None:
+        if not self.snapshot:
+            messagebox.showwarning("No scan yet", "Run a scan first.")
+            return
+        target = preferred_bluetooth_repair_target(self.snapshot)
+        if not target:
+            messagebox.showinfo(
+                "No Bluetooth headset found",
+                (
+                    "No paired Bluetooth headset with an address was found. "
+                    "Open Bluetooth settings and check the device list."
+                ),
+            )
+            self._open_settings("ms-settings:bluetooth")
+            return
+        if not messagebox.askyesno(
+            "Repair Bluetooth pairing?",
+            (
+                f"This will clear the Windows pairing cache for:\n"
+                f"  {target.get('name')} ({target.get('address')})\n\n"
+                "Windows will ask for Administrator permission (UAC).\n"
+                "After it finishes you must reboot, then re-pair the headset.\n\n"
+                "Use this when:\n"
+                "• audio works but the Bluetooth icon says disconnected\n"
+                "• Remove device is stuck on Removing / grayed out"
+            ),
+        ):
+            return
+        self.scan_button.configure(state="disabled")
+        self.status.set(
+            f"Repairing Bluetooth pairing for {target.get('name')}… Approve UAC."
+        )
+        threading.Thread(
+            target=self._repair_bluetooth_worker,
+            args=(target,),
+            daemon=True,
+        ).start()
+
+    def _repair_bluetooth_worker(self, target: dict) -> None:
+        try:
+            result = repair_bluetooth_pairing(
+                address=str(target.get("address")),
+                friendly_name=str(target.get("name") or "Bluetooth headset"),
+                elevate=True,
+                wait=True,
+            )
+            snapshot = collect_snapshot()
+            self.root.after(
+                0, lambda: self._after_bluetooth_repair(result, snapshot)
+            )
+        except Exception as exc:
+            self.root.after(
+                0,
+                lambda: self._show_error("Bluetooth repair failed", exc),
+            )
+
+    def _after_bluetooth_repair(self, result: dict, snapshot: dict) -> None:
+        self._display_snapshot(snapshot)
+        log_tail = "\n".join(
+            line for line in str(result.get("log") or "").splitlines() if line
+        )[-800:]
+        messagebox.showinfo(
+            "Bluetooth repair finished",
+            (
+                f"Target: {result.get('friendly_name')} ({result.get('address')})\n"
+                f"Reboot required: yes\n\n"
+                f"{log_tail or 'No log captured (UAC may have been declined).'}\n\n"
+                "Reboot now, then re-pair the headset in Bluetooth settings."
+            ),
+        )
 
     def save_current_report(self) -> None:
         if not self.snapshot:

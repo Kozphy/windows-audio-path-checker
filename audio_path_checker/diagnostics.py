@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .bluetooth import (
+    collect_bluetooth,
+    match_headset_for_endpoint,
+)
+
 
 BROWSER_PROCESSES = {
     "brave.exe",
@@ -286,12 +291,15 @@ def collect_snapshot() -> dict[str, Any]:
     services, service_errors = _collect_audio_services()
     portaudio, portaudio_errors = _collect_portaudio()
     core_audio, core_errors = _collect_core_audio()
+    default_endpoint_name = (core_audio.get("default_endpoint") or {}).get("name")
+    bluetooth, bluetooth_errors = collect_bluetooth(default_endpoint_name)
     errors.extend(service_errors)
     errors.extend(portaudio_errors)
     errors.extend(core_errors)
+    errors.extend(bluetooth_errors)
 
     snapshot: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "system": {
             "platform": platform.platform(),
@@ -303,6 +311,7 @@ def collect_snapshot() -> dict[str, Any]:
         "services": services,
         "portaudio": portaudio,
         "core_audio": core_audio,
+        "bluetooth": bluetooth,
         "errors": errors,
     }
     snapshot["findings"] = analyze_snapshot(snapshot)
@@ -591,6 +600,75 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                 "More than one playback path is installed",
                 f"{len(output_devices)} app-level outputs were found across Windows audio APIs.",
                 "This is normal, but it makes per-app routing the most likely cause.",
+            )
+        )
+
+    bluetooth = snapshot.get("bluetooth") or {}
+    association = bluetooth.get("association_service") or {}
+    association_status = str(association.get("status", "")).casefold()
+    if association_status in {"stopped", "stoppending", "stop pending"}:
+        findings.append(
+            _finding(
+                "warning",
+                "bluetooth-association-service",
+                "Device Association Service is not running",
+                f"Status: {association.get('status')}.",
+                "Use Repair Bluetooth pairing, then reboot. Bluetooth Settings can get stuck Removing device while this service is down.",
+            )
+        )
+
+    paired_headsets = list(bluetooth.get("paired_headsets") or [])
+    if len(paired_headsets) > 1:
+        labels = ", ".join(str(item.get("name")) for item in paired_headsets[:5])
+        findings.append(
+            _finding(
+                "info",
+                "bluetooth-multiple-headsets",
+                "Multiple Bluetooth headsets are paired",
+                labels,
+                "Extra paired headsets make Windows tray/icon status more unreliable.",
+            )
+        )
+
+    endpoint_name = core_name or (endpoint.get("name") if endpoint else None)
+    matched_headset = match_headset_for_endpoint(bluetooth, endpoint_name)
+    endpoint_present = bluetooth.get("default_endpoint_present")
+    looks_like_bt_default = bool(matched_headset) or (
+        isinstance(endpoint_name, str)
+        and any(
+            token in endpoint_name.casefold()
+            for token in ("edifier", "bluetooth", "headset", "airpods", "buds")
+        )
+    )
+    if looks_like_bt_default and endpoint_present is False:
+        headset_label = (
+            f"{matched_headset.get('name')} ({matched_headset.get('address')})"
+            if matched_headset
+            else endpoint_name
+        )
+        findings.append(
+            _finding(
+                "warning",
+                "bluetooth-audio-ui-desync",
+                "Bluetooth audio works, but Windows status looks disconnected",
+                (
+                    f"Default playback is {endpoint_name}, but the audio endpoint "
+                    f"reports IsPresent=False. Matched headset: {headset_label}."
+                ),
+                "Use Repair Bluetooth pairing (clears pairing cache; needs Admin + reboot), then re-pair the headset.",
+            )
+        )
+    elif matched_headset and not matched_headset.get("last_connected"):
+        findings.append(
+            _finding(
+                "warning",
+                "bluetooth-audio-ui-desync",
+                "Bluetooth audio works, but Windows status looks disconnected",
+                (
+                    f"Default playback is {endpoint_name}, and paired headset "
+                    f"{matched_headset.get('name')} has no LastConnectedTime."
+                ),
+                "Use Repair Bluetooth pairing (clears pairing cache; needs Admin + reboot), then re-pair the headset.",
             )
         )
 

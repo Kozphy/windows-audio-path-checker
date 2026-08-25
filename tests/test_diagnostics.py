@@ -34,6 +34,16 @@ def base_snapshot():
             "master_muted": False,
             "sessions": [],
         },
+        "bluetooth": {
+            "association_service": {
+                "name": "DeviceAssociationService",
+                "status": "Running",
+            },
+            "bluetooth_service": {"name": "bthserv", "status": "Running"},
+            "paired_headsets": [],
+            "default_endpoint_present": True,
+            "default_endpoint_name": "Headphones (USB Audio Device)",
+        },
         "errors": [],
     }
 
@@ -187,6 +197,64 @@ class AnalyzeSnapshotTests(unittest.TestCase):
         encoded = json.dumps(snapshot)
 
         self.assertIn("app-output-available", encoded)
+
+    def test_bluetooth_endpoint_not_present_is_a_warning(self):
+        snapshot = base_snapshot()
+        snapshot["core_audio"]["default_endpoint"] = {
+            "name": "Headphones (EDIFIER W800BT Pro)"
+        }
+        snapshot["portaudio"]["default_output_name"] = (
+            "Headphones (EDIFIER W800BT Pro)"
+        )
+        snapshot["portaudio"]["output_devices"] = [
+            {
+                "index": 4,
+                "name": "Headphones (EDIFIER W800BT Pro)",
+                "host_api": "Windows WASAPI",
+                "is_default": True,
+            }
+        ]
+        snapshot["bluetooth"] = {
+            "association_service": {
+                "name": "DeviceAssociationService",
+                "status": "Running",
+            },
+            "paired_headsets": [
+                {
+                    "name": "EDIFIER W800BT Pro",
+                    "address": "c8247887e57c",
+                    "last_connected": None,
+                    "is_present": True,
+                }
+            ],
+            "default_endpoint_present": False,
+            "default_endpoint_name": "Headphones (EDIFIER W800BT Pro)",
+        }
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(
+            by_code["bluetooth-audio-ui-desync"]["severity"], "warning"
+        )
+        self.assertIn(
+            "Repair Bluetooth pairing",
+            by_code["bluetooth-audio-ui-desync"]["action"],
+        )
+
+    def test_bluetooth_association_service_stopped_is_a_warning(self):
+        snapshot = base_snapshot()
+        snapshot["bluetooth"]["association_service"] = {
+            "name": "DeviceAssociationService",
+            "status": "Stopped",
+        }
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(
+            by_code["bluetooth-association-service"]["severity"], "warning"
+        )
 
 
 class DeviceNameTests(unittest.TestCase):

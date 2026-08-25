@@ -74,9 +74,26 @@ app volume and the app's selected Output device.
 - **Open Volume mixer** opens `ms-settings:apps-volume`, where Windows exposes
   per-app output routing.
 - **Open Sound settings** opens the normal system sound page.
+- **Open Bluetooth settings** opens the Bluetooth devices page.
+- **Repair Bluetooth pairing** (opt-in, requires Administrator / UAC) clears
+  the Windows pairing cache for the headset tied to your default playback
+  device. Use this when audio still works but the Bluetooth icon says
+  disconnected, or when **Remove device** is stuck on “Removing device” and
+  grayed out. After repair, reboot and re-pair the headset. The checker does
+  not call hanging PnP disable/remove APIs.
 
-The checker intentionally does not reinstall drivers, edit the registry, change
-undocumented persistent routing data, or restart services automatically.
+Automatic scans never edit the registry or restart services. Registry repair
+only runs when you click **Repair Bluetooth pairing** or pass
+`--repair-bluetooth`.
+
+CLI examples:
+
+```powershell
+.\.venv\Scripts\python -m audio_path_checker --no-gui
+.\.venv\Scripts\python -m audio_path_checker --unmute-browsers
+.\.venv\Scripts\python -m audio_path_checker --repair-bluetooth
+.\.venv\Scripts\python -m audio_path_checker --repair-bluetooth "EDIFIER W800BT Pro"
+```
 
 ## If the checker does not solve it
 
