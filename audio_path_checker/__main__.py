@@ -19,12 +19,15 @@ from .diagnostics import (
     unmute_silent_browser_sessions,
 )
 from .inference import enrich_snapshot
+from .storage import connect as connect_history
+from .storage import store_snapshot, store_timeline, summary as history_summary
+from .timeline import record_timeline, state_fingerprint
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Diagnose why Windows test sounds work while browsers and apps are silent."
+            "Diagnose Windows audio paths, rank root causes, and record reliability evidence."
         )
     )
     parser.add_argument(
@@ -74,6 +77,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print a compact ranked root-cause summary before the full JSON report.",
     )
+    parser.add_argument(
+        "--timeline",
+        type=float,
+        metavar="SECONDS",
+        help="Continuously sample the audio path for this many seconds and report state transitions.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="Sampling interval for --timeline (default: 5 seconds).",
+    )
+    parser.add_argument(
+        "--database",
+        type=Path,
+        metavar="PATH",
+        help="Persist scans and timeline transitions to a local SQLite database.",
+    )
+    parser.add_argument(
+        "--history-summary",
+        action="store_true",
+        help="Print aggregate reliability metrics from --database.",
+    )
     return parser
 
 
@@ -86,10 +113,7 @@ def _select_bluetooth_target(snapshot: dict, name: str | None) -> dict | None:
             address = str(item.get("address") or "")
             if needle in item_name.casefold() or needle == address.casefold():
                 if address:
-                    return {
-                        "name": item_name,
-                        "address": address.lower(),
-                    }
+                    return {"name": item_name, "address": address.lower()}
         return None
     return preferred_bluetooth_repair_target(snapshot)
 
@@ -116,11 +140,35 @@ def _print_root_causes(snapshot: dict) -> None:
         print(f"   action: {cause.get('recommendation')}")
 
 
+def _print_timeline_summary(timeline: dict) -> None:
+    metrics = timeline.get("metrics") or {}
+    print("\nTimeline reliability summary")
+    print("----------------------------")
+    print(f"Samples: {metrics.get('sample_count', 0)}")
+    print(f"Unique states: {metrics.get('unique_states', 0)}")
+    print(f"Transitions: {metrics.get('transition_count', 0)}")
+    print(f"State-change rate: {float(metrics.get('state_change_rate') or 0):.2f}")
+    print(f"Critical sample ratio: {float(metrics.get('critical_sample_ratio') or 0):.0%}")
+    for event in timeline.get("transitions") or []:
+        label = event.get("code") or event.get("field") or event.get("type")
+        print(f"  - {event.get('observed_at')}: {event.get('type')} [{label}]")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.interval <= 0:
+        raise SystemExit("--interval must be greater than zero")
+    if args.timeline is not None and args.timeline <= 0:
+        raise SystemExit("--timeline must be greater than zero")
+    if args.history_summary and not args.database:
+        raise SystemExit("--history-summary requires --database PATH")
+
     cli_mode = (
         args.no_gui
         or args.root_causes
+        or args.timeline is not None
+        or args.database is not None
+        or args.history_summary
         or args.unmute_browsers
         or args.enable_bluetooth_adapter
         or args.repair_bluetooth is not None
@@ -207,13 +255,47 @@ def main(argv: list[str] | None = None) -> int:
             )
             snapshot = _scan()
 
+    timeline = None
+    if args.timeline is not None:
+        print(f"Recording audio state for {args.timeline:g}s every {args.interval:g}s…")
+        timeline = record_timeline(
+            _scan,
+            duration_seconds=args.timeline,
+            interval_seconds=args.interval,
+        )
+        _print_timeline_summary(timeline)
+        samples = timeline.get("samples") or []
+        if samples:
+            snapshot = samples[-1].get("snapshot") or snapshot
+
+    if args.database:
+        with connect_history(args.database) as connection:
+            if timeline is not None:
+                stored_scans, stored_transitions = store_timeline(connection, timeline)
+                print(
+                    f"Stored {stored_scans} scans and {stored_transitions} transitions "
+                    f"in {args.database}."
+                )
+            else:
+                scan_id = store_snapshot(
+                    connection,
+                    snapshot,
+                    fingerprint=state_fingerprint(snapshot),
+                )
+                print(f"Stored scan #{scan_id} in {args.database}.")
+            if args.history_summary:
+                print("\nHistory summary")
+                print("---------------")
+                print(json.dumps(history_summary(connection), indent=2, ensure_ascii=True))
+
     if args.report:
-        save_report(snapshot, args.report)
+        report_payload = dict(snapshot)
+        if timeline is not None:
+            report_payload["timeline"] = timeline
+        save_report(report_payload, args.report)
     if args.root_causes:
         _print_root_causes(snapshot)
 
-    # Escaping non-ASCII here keeps the CLI reliable in legacy Windows
-    # consoles that still use a narrow code page. Saved reports remain UTF-8.
     print(json.dumps(snapshot, indent=2, ensure_ascii=True))
     has_critical = any(
         finding.get("severity") == "critical"
