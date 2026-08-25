@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .bluetooth_inference import infer_bluetooth_state
+from .device_graph import build_device_graph
 
 
 @dataclass(frozen=True)
@@ -149,11 +150,12 @@ def enrich_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(snapshot)
     root_causes = infer_root_causes(snapshot)
     enriched["inference"] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "method": "transparent-rule-weighting",
         "root_causes": root_causes,
         "top_root_cause": root_causes[0] if root_causes else None,
         "bluetooth_path": infer_bluetooth_state(snapshot),
+        "device_graph": build_device_graph(snapshot),
         "disclaimer": (
             "Scores represent rule-derived diagnostic confidence and are not "
             "population-calibrated probabilities."
