@@ -19,6 +19,9 @@ from .diagnostics import (
     unmute_silent_browser_sessions,
 )
 from .bluetooth import (
+    disabled_bluetooth_adapters,
+    enable_bluetooth_adapter,
+    preferred_bluetooth_adapter,
     preferred_bluetooth_repair_target,
     repair_bluetooth_pairing,
 )
@@ -91,13 +94,21 @@ class AudioCheckerApp:
         ).pack(side=LEFT)
         ttk.Button(
             bt_bar,
+            text="Enable Bluetooth adapter",
+            command=self.enable_bluetooth,
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Button(
+            bt_bar,
             text="Repair Bluetooth pairing",
             command=self.repair_bluetooth,
         ).pack(side=LEFT, padx=(8, 0))
         ttk.Label(
             bt_bar,
-            text="Use when audio works but the Bluetooth icon says disconnected, or Remove device is stuck/grayed out.",
-            wraplength=620,
+            text=(
+                "Enable adapter: 'Couldn't connect'. "
+                "Repair pairing: icon desync / stuck Remove device."
+            ),
+            wraplength=420,
         ).pack(side=LEFT, padx=(12, 0))
 
         test_frame = ttk.LabelFrame(outer, text="Sound path tests", padding=10)
@@ -371,6 +382,87 @@ class AudioCheckerApp:
                 (
                     "No recognized browser session was muted or below 50%. "
                     "Start YouTube playback and scan again."
+                ),
+            )
+
+    def enable_bluetooth(self) -> None:
+        if not self.snapshot:
+            messagebox.showwarning("No scan yet", "Run a scan first.")
+            return
+        disabled = disabled_bluetooth_adapters(self.snapshot)
+        adapter = disabled[0] if disabled else preferred_bluetooth_adapter(self.snapshot)
+        if not adapter:
+            messagebox.showinfo(
+                "No Bluetooth adapter found",
+                "No Bluetooth adapter was detected. Check Device Manager.",
+            )
+            return
+        if not disabled and not messagebox.askyesno(
+            "Adapter looks healthy",
+            (
+                f"{adapter.get('name')} status is {adapter.get('status')}.\n\n"
+                "Enable it anyway? (Usually only needed when Add device shows "
+                "'Couldn't connect'.)"
+            ),
+        ):
+            return
+        if disabled and not messagebox.askyesno(
+            "Enable Bluetooth adapter?",
+            (
+                f"Windows reports this adapter as disabled/error:\n"
+                f"  {adapter.get('name')} [{adapter.get('status')}]\n\n"
+                "This usually causes Add device → Couldn't connect.\n"
+                "Approve the Administrator (UAC) prompt to re-enable it."
+            ),
+        ):
+            return
+        self.scan_button.configure(state="disabled")
+        self.status.set(
+            f"Enabling {adapter.get('name')}… Approve UAC."
+        )
+        threading.Thread(
+            target=self._enable_bluetooth_worker,
+            args=(adapter,),
+            daemon=True,
+        ).start()
+
+    def _enable_bluetooth_worker(self, adapter: dict) -> None:
+        try:
+            result = enable_bluetooth_adapter(
+                instance_id=str(adapter.get("instance_id") or ""),
+                elevate=True,
+                wait=True,
+            )
+            snapshot = collect_snapshot()
+            self.root.after(
+                0, lambda: self._after_enable_bluetooth(result, snapshot)
+            )
+        except Exception as exc:
+            self.root.after(
+                0,
+                lambda: self._show_error("Enable Bluetooth adapter failed", exc),
+            )
+
+    def _after_enable_bluetooth(self, result: dict, snapshot: dict) -> None:
+        self._display_snapshot(snapshot)
+        still_disabled = bool(disabled_bluetooth_adapters(snapshot))
+        log_tail = "\n".join(
+            line for line in str(result.get("log") or "").splitlines() if line
+        )[-800:]
+        if still_disabled:
+            messagebox.showwarning(
+                "Bluetooth adapter still disabled",
+                (
+                    f"{log_tail or 'No log captured (UAC may have been declined).'}\n\n"
+                    "Approve UAC and retry, or enable the adapter in Device Manager."
+                ),
+            )
+        else:
+            messagebox.showinfo(
+                "Bluetooth adapter enabled",
+                (
+                    f"{log_tail or 'Adapter enabled.'}\n\n"
+                    "Put the headset in pairing mode, then Add device in Bluetooth settings."
                 ),
             )
 

@@ -1,4 +1,4 @@
-"""Bluetooth headset status and opt-in pairing repair for Windows."""
+"""Bluetooth headset status and opt-in repairs for Windows."""
 
 from __future__ import annotations
 
@@ -17,18 +17,54 @@ $ErrorActionPreference = 'SilentlyContinue'
 $result = [ordered]@{
   association_service = $null
   bluetooth_service = $null
+  audio_gateway_service = $null
+  avctp_service = $null
+  adapters = @()
   paired_headsets = @()
   default_endpoint_present = $null
   default_endpoint_name = $null
 }
-foreach ($name in @('DeviceAssociationService','bthserv')) {
-  $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+foreach ($pair in @(
+  @{ Name = 'DeviceAssociationService'; Key = 'association_service' },
+  @{ Name = 'bthserv'; Key = 'bluetooth_service' },
+  @{ Name = 'BTAGService'; Key = 'audio_gateway_service' },
+  @{ Name = 'BthAvctpSvc'; Key = 'avctp_service' }
+)) {
+  $svc = Get-Service -Name $pair.Name -ErrorAction SilentlyContinue
   if ($svc) {
-    $entry = [ordered]@{ name = $svc.Name; status = [string]$svc.Status }
-    if ($name -eq 'DeviceAssociationService') { $result.association_service = $entry }
-    else { $result.bluetooth_service = $entry }
+    $result[$pair.Key] = [ordered]@{ name = $svc.Name; status = [string]$svc.Status }
   }
 }
+
+$adapters = @()
+Get-PnpDevice -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.FriendlyName -and (
+      $_.FriendlyName -match 'Bluetooth Adapter' -or
+      ($_.Class -eq 'Bluetooth' -and $_.FriendlyName -match 'Adapter|Radio')
+    )
+  } |
+  ForEach-Object {
+    $instanceId = $_.InstanceId
+    $props = Get-PnpDeviceProperty -InstanceId $instanceId -ErrorAction SilentlyContinue
+    $problem = ($props | Where-Object KeyName -eq 'DEVPKEY_Device_ProblemCode').Data
+    $present = ($props | Where-Object KeyName -eq 'DEVPKEY_Device_IsPresent').Data
+    $cim = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+      Where-Object { $_.PNPDeviceID -eq $instanceId } |
+      Select-Object -First 1
+    $cm = if ($cim) { [string]$cim.ConfigManagerErrorCode } else { $null }
+    $adapters += [ordered]@{
+      name = [string]$_.FriendlyName
+      status = [string]$_.Status
+      instance_id = [string]$instanceId
+      class = [string]$_.Class
+      is_present = [bool]$present
+      problem_code = if ($null -ne $problem) { [int]$problem } else { $null }
+      config_manager_error = $cm
+    }
+  }
+$result.adapters = $adapters
+
 $headsets = @()
 Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |
   Where-Object {
@@ -119,6 +155,48 @@ try {{ Start-Process 'ms-settings:bluetooth' }} catch {{}}
 """
 
 
+_BT_ENABLE_ADAPTER_SCRIPT = r"""
+$ErrorActionPreference = 'Continue'
+$log = Join-Path $env:TEMP 'wapc-bluetooth-enable.log'
+function Log([string]$m) {{ Add-Content -Path $log -Value $m -Encoding UTF8; Write-Output $m }}
+Set-Content -Path $log -Value 'Windows Audio Path Checker: enable Bluetooth adapter...' -Encoding UTF8
+$instanceId = '{instance_id}'
+
+$adapter = $null
+if ($instanceId) {{
+  $adapter = Get-PnpDevice | Where-Object {{ $_.InstanceId -eq $instanceId }} | Select-Object -First 1
+}}
+if (-not $adapter) {{
+  $adapter = Get-PnpDevice | Where-Object {{ $_.FriendlyName -match 'Bluetooth Adapter' }} | Select-Object -First 1
+  if ($adapter) {{ $instanceId = $adapter.InstanceId }}
+}}
+if (-not $adapter) {{ Log 'No Bluetooth adapter found'; exit 2 }}
+Log ("Before: Status=$($adapter.Status) Id=$instanceId")
+
+try {{
+  Enable-PnpDevice -InstanceId $instanceId -Confirm:$false -ErrorAction Stop
+  Log 'Enable-PnpDevice OK'
+}} catch {{
+  Log ('Enable-PnpDevice failed: ' + $_.Exception.Message)
+  $out = & pnputil.exe /enable-device "$instanceId" 2>&1 | Out-String
+  Log ('pnputil: ' + ($out.Trim() -replace '\s+', ' '))
+}}
+
+Start-Sleep -Seconds 3
+foreach ($name in @('bthserv','BTAGService','BthAvctpSvc','DeviceAssociationService')) {{
+  try {{ Start-Service $name -ErrorAction Stop; Log ("Started $name") }}
+  catch {{ Log ("Start $name: $($_.Exception.Message)") }}
+}}
+Start-Sleep -Seconds 2
+$after = Get-PnpDevice | Where-Object {{ $_.InstanceId -eq $instanceId }} | Select-Object -First 1
+$cim = Get-CimInstance Win32_PnPEntity | Where-Object {{ $_.PNPDeviceID -eq $instanceId }} | Select-Object -First 1
+Log ("After: Status=$($after.Status) ConfigManagerErrorCode=$($cim.ConfigManagerErrorCode)")
+Log 'DONE'
+Log 'Retry Add device in Bluetooth settings (put the headset in pairing mode first).'
+try {{ Start-Process 'ms-settings:bluetooth' }} catch {{}}
+"""
+
+
 def _run_powershell(script: str, *, env: dict[str, str] | None = None, timeout: int = 45) -> str:
     completed = subprocess.run(
         [
@@ -143,13 +221,45 @@ def _run_powershell(script: str, *, env: dict[str, str] | None = None, timeout: 
     return completed.stdout.strip()
 
 
+def _run_elevated_script(
+    script_path: Path, log_path: Path, *, wait: bool = True
+) -> tuple[int, str]:
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            (
+                f"$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs "
+                f"-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{script_path}') "
+                f"-PassThru -Wait; exit $p.ExitCode"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180 if wait else 30,
+        check=False,
+    )
+    log_text = (
+        log_path.read_text(encoding="utf-8", errors="replace")
+        if log_path.exists()
+        else ""
+    )
+    return completed.returncode, log_text
+
+
 def collect_bluetooth(
     default_endpoint_name: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Collect paired headset status and association-service health."""
+    """Collect adapter, headset, and Bluetooth service health."""
     result: dict[str, Any] = {
         "association_service": None,
         "bluetooth_service": None,
+        "audio_gateway_service": None,
+        "avctp_service": None,
+        "adapters": [],
         "paired_headsets": [],
         "default_endpoint_present": None,
         "default_endpoint_name": default_endpoint_name,
@@ -253,6 +363,81 @@ def preferred_bluetooth_repair_target(
     return targets[0] if targets else None
 
 
+def disabled_bluetooth_adapters(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Adapters that are disabled/erroring and block Add device / pairing."""
+    bluetooth = snapshot.get("bluetooth") or {}
+    bad: list[dict[str, Any]] = []
+    for item in bluetooth.get("adapters") or []:
+        status = str(item.get("status", "")).casefold()
+        problem = item.get("problem_code")
+        cm = str(item.get("config_manager_error") or "").casefold()
+        disabled = (
+            status in {"error", "disabled"}
+            or problem == 22  # CM_PROB_DISABLED
+            or "disabled" in cm
+            or cm == "cm_prob_disabled"
+        )
+        if disabled and item.get("instance_id"):
+            bad.append(item)
+    return bad
+
+
+def preferred_bluetooth_adapter(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Prefer a disabled adapter; otherwise the first known adapter."""
+    disabled = disabled_bluetooth_adapters(snapshot)
+    if disabled:
+        return disabled[0]
+    adapters = list((snapshot.get("bluetooth") or {}).get("adapters") or [])
+    return adapters[0] if adapters else None
+
+
+def enable_bluetooth_adapter(
+    *,
+    instance_id: str | None = None,
+    elevate: bool = True,
+    wait: bool = True,
+) -> dict[str, Any]:
+    """
+    Opt-in repair for Windows "Couldn't connect" when the radio is disabled.
+
+    Enables the Bluetooth adapter (CM_PROB_DISABLED / Error) and starts core
+    Bluetooth services. Requires UAC when elevate=True.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("Bluetooth adapter repair is available only on Windows.")
+
+    safe_id = (instance_id or "").replace("'", "").replace('"', "")
+    script = _BT_ENABLE_ADAPTER_SCRIPT.format(instance_id=safe_id)
+    script_path = Path(tempfile.gettempdir()) / "wapc-bluetooth-enable.ps1"
+    log_path = Path(tempfile.gettempdir()) / "wapc-bluetooth-enable.log"
+    script_path.write_text(script, encoding="utf-8")
+    if log_path.exists():
+        log_path.unlink()
+
+    if elevate:
+        exit_code, log_text = _run_elevated_script(script_path, log_path, wait=wait)
+        return {
+            "elevated": True,
+            "instance_id": safe_id or None,
+            "exit_code": exit_code,
+            "log": log_text,
+            "reboot_required": False,
+            "script_path": str(script_path),
+            "log_path": str(log_path),
+        }
+
+    raw = _run_powershell(script, timeout=60)
+    return {
+        "elevated": False,
+        "instance_id": safe_id or None,
+        "exit_code": 0,
+        "log": raw,
+        "reboot_required": False,
+        "script_path": str(script_path),
+        "log_path": str(log_path),
+    }
+
+
 def repair_bluetooth_pairing(
     *,
     address: str,
@@ -286,34 +471,12 @@ def repair_bluetooth_pairing(
         log_path.unlink()
 
     if elevate:
-        completed = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                (
-                    f"$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs "
-                    f"-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{script_path}') "
-                    f"-PassThru -Wait; exit $p.ExitCode"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180 if wait else 30,
-            check=False,
-        )
-        log_text = (
-            log_path.read_text(encoding="utf-8", errors="replace")
-            if log_path.exists()
-            else ""
-        )
+        exit_code, log_text = _run_elevated_script(script_path, log_path, wait=wait)
         return {
             "elevated": True,
             "address": normalized,
             "friendly_name": friendly_name,
-            "exit_code": completed.returncode,
+            "exit_code": exit_code,
             "log": log_text,
             "reboot_required": True,
             "script_path": str(script_path),

@@ -256,6 +256,28 @@ class AnalyzeSnapshotTests(unittest.TestCase):
             by_code["bluetooth-association-service"]["severity"], "warning"
         )
 
+    def test_bluetooth_adapter_disabled_is_critical(self):
+        snapshot = base_snapshot()
+        snapshot["bluetooth"]["adapters"] = [
+            {
+                "name": "MediaTek Bluetooth Adapter",
+                "status": "Error",
+                "instance_id": "USB\\VID_0489&PID_E14F&MI_00\\1",
+                "problem_code": 22,
+                "config_manager_error": "CM_PROB_DISABLED",
+            }
+        ]
+
+        findings = analyze_snapshot(snapshot)
+        by_code = {finding["code"]: finding for finding in findings}
+
+        self.assertEqual(
+            by_code["bluetooth-adapter-disabled"]["severity"], "critical"
+        )
+        self.assertIn(
+            "Couldn't connect", by_code["bluetooth-adapter-disabled"]["action"]
+        )
+
 
 class DeviceNameTests(unittest.TestCase):
     def test_equivalent_device_names(self):

@@ -75,6 +75,10 @@ app volume and the app's selected Output device.
   per-app output routing.
 - **Open Sound settings** opens the normal system sound page.
 - **Open Bluetooth settings** opens the Bluetooth devices page.
+- **Enable Bluetooth adapter** (opt-in, requires Administrator / UAC)
+  re-enables a disabled Bluetooth radio (problem code 22 /
+  `CM_PROB_DISABLED`). Use this when **Add device** shows
+  **Couldn't connect**.
 - **Repair Bluetooth pairing** (opt-in, requires Administrator / UAC) clears
   the Windows pairing cache for the headset tied to your default playback
   device. Use this when audio still works but the Bluetooth icon says
@@ -83,14 +87,15 @@ app volume and the app's selected Output device.
   not call hanging PnP disable/remove APIs.
 
 Automatic scans never edit the registry or restart services. Registry repair
-only runs when you click **Repair Bluetooth pairing** or pass
-`--repair-bluetooth`.
+and adapter enable only run when you click the matching button or pass the
+CLI flags below.
 
 CLI examples:
 
 ```powershell
 .\.venv\Scripts\python -m audio_path_checker --no-gui
 .\.venv\Scripts\python -m audio_path_checker --unmute-browsers
+.\.venv\Scripts\python -m audio_path_checker --enable-bluetooth-adapter
 .\.venv\Scripts\python -m audio_path_checker --repair-bluetooth
 .\.venv\Scripts\python -m audio_path_checker --repair-bluetooth "EDIFIER W800BT Pro"
 ```

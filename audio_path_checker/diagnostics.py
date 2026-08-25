@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 from .bluetooth import (
     collect_bluetooth,
+    disabled_bluetooth_adapters,
     match_headset_for_endpoint,
 )
 
@@ -299,7 +300,7 @@ def collect_snapshot() -> dict[str, Any]:
     errors.extend(bluetooth_errors)
 
     snapshot: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "system": {
             "platform": platform.platform(),
@@ -604,6 +605,23 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
         )
 
     bluetooth = snapshot.get("bluetooth") or {}
+    disabled_adapters = disabled_bluetooth_adapters(snapshot)
+    if disabled_adapters:
+        labels = ", ".join(
+            f"{item.get('name')} [{item.get('status')}"
+            f"/code={item.get('problem_code')}]"
+            for item in disabled_adapters
+        )
+        findings.append(
+            _finding(
+                "critical",
+                "bluetooth-adapter-disabled",
+                "Bluetooth adapter is disabled (Add device will fail)",
+                labels,
+                "Use Enable Bluetooth adapter (Admin/UAC), then retry Add device. This is the usual cause of Windows 'Couldn't connect'.",
+            )
+        )
+
     association = bluetooth.get("association_service") or {}
     association_status = str(association.get("status", "")).casefold()
     if association_status in {"stopped", "stoppending", "stop pending"}:

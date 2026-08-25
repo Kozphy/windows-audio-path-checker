@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 
 from .bluetooth import (
+    disabled_bluetooth_adapters,
+    enable_bluetooth_adapter,
+    preferred_bluetooth_adapter,
     preferred_bluetooth_repair_target,
     repair_bluetooth_pairing,
 )
@@ -34,6 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Unmute recognized browser sessions, raise low volumes to 50%%, "
             "then rescan and print the verified report (implies --no-gui)."
+        ),
+    )
+    parser.add_argument(
+        "--enable-bluetooth-adapter",
+        action="store_true",
+        help=(
+            "Re-enable a disabled Bluetooth adapter (UAC). Fixes Windows "
+            "'Couldn't connect' when the radio is disabled. Implies --no-gui."
         ),
     )
     parser.add_argument(
@@ -82,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     cli_mode = (
         args.no_gui
         or args.unmute_browsers
+        or args.enable_bluetooth_adapter
         or args.repair_bluetooth is not None
         or args.open_bluetooth_settings
     )
@@ -108,6 +120,36 @@ def main(argv: list[str] | None = None) -> int:
         print("Rescanning to verify…")
 
     snapshot = collect_snapshot()
+
+    if args.enable_bluetooth_adapter:
+        disabled = disabled_bluetooth_adapters(snapshot)
+        adapter = disabled[0] if disabled else preferred_bluetooth_adapter(snapshot)
+        if not adapter:
+            print("No Bluetooth adapter was found.", file=sys.stderr)
+        else:
+            print(
+                f"Enabling Bluetooth adapter {adapter.get('name')} "
+                f"[{adapter.get('status')}]… Approve UAC."
+            )
+            result = enable_bluetooth_adapter(
+                instance_id=str(adapter.get("instance_id") or ""),
+                elevate=True,
+                wait=True,
+            )
+            if result.get("log"):
+                print(result["log"])
+            snapshot = collect_snapshot()
+            if disabled_bluetooth_adapters(snapshot):
+                print(
+                    "Adapter still disabled. Approve UAC and retry, "
+                    "or enable it in Device Manager.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Adapter enabled. Put the headset in pairing mode, "
+                    "then Add device in Bluetooth settings."
+                )
 
     if args.repair_bluetooth is not None:
         target = _select_bluetooth_target(snapshot, args.repair_bluetooth)
