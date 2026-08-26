@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .bluetooth import (
     disabled_bluetooth_adapters,
     enable_bluetooth_adapter,
@@ -18,18 +19,75 @@ from .diagnostics import (
     save_report,
     unmute_silent_browser_sessions,
 )
+from .pipeline import run_audio_path_diagnosis
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Diagnose why Windows test sounds work while browsers and apps are silent."
+            "Evidence-driven Windows audio / Bluetooth path diagnostics. "
+            "Bluetooth Connected is not treated as Audio Working."
         )
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"windows-audio-path-checker {__version__}",
     )
     parser.add_argument(
         "--no-gui",
         action="store_true",
         help="Scan in the terminal instead of opening the friendly window.",
+    )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "Run the audio-path diagnosis pipeline (evidence → state → "
+            "hypotheses → plan). Non-destructive. Implies --no-gui."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Same as --diagnose: recommend actions without executing repairs.",
+    )
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help=(
+            "Allow low/medium risk remediation (up to R3), with verification. "
+            "Implies --no-gui."
+        ),
+    )
+    parser.add_argument(
+        "--aggressive-repair",
+        action="store_true",
+        help=(
+            "Allow high-risk scoped remediation (up to R5 pairing clear). "
+            "Implies --no-gui."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON for diagnose/repair modes.",
+    )
+    parser.add_argument(
+        "--device",
+        default="EDIFIER W800BT Pro",
+        help="Headset name filter for path diagnosis (default: EDIFIER W800BT Pro).",
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        default=None,
+        help="Root directory for session artifacts (default: ./artifacts/sessions).",
+    )
+    parser.add_argument(
+        "--no-artifacts",
+        action="store_true",
+        help="Do not write artifacts/sessions evidence trail.",
     )
     parser.add_argument(
         "--unmute-browsers",
@@ -88,19 +146,62 @@ def _select_bluetooth_target(snapshot: dict, name: str | None) -> dict | None:
     return preferred_bluetooth_repair_target(snapshot)
 
 
+def _pipeline_mode(args: argparse.Namespace) -> str | None:
+    if args.aggressive_repair:
+        return "aggressive-repair"
+    if args.repair:
+        return "repair"
+    if args.diagnose or args.dry_run:
+        return "diagnose"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    mode = _pipeline_mode(args)
     cli_mode = (
         args.no_gui
+        or mode is not None
         or args.unmute_browsers
         or args.enable_bluetooth_adapter
         or args.repair_bluetooth is not None
         or args.open_bluetooth_settings
+        or args.json
     )
     if not cli_mode:
         from .gui import main as gui_main
 
         gui_main()
+        return 0
+
+    if mode is not None:
+        result = run_audio_path_diagnosis(
+            device_name=args.device,
+            mode=mode,
+            artifacts_root=args.artifacts_dir,
+            write_artifacts=not args.no_artifacts,
+            execute=mode in {"repair", "aggressive-repair"},
+        )
+        if args.json:
+            payload = {
+                "evidence": result["evidence"],
+                "diagnosis": result["diagnosis"],
+                "plan": result["plan"],
+                "verification": result["verification"],
+                "summary": result["summary"],
+                "session_dir": result["session_dir"],
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=True))
+        else:
+            print(result["report_text"])
+            if result.get("session_dir"):
+                print(f"\nSession artifacts: {result['session_dir']}")
+        state = str(
+            ((result.get("diagnosis") or {}).get("classification") or {}).get("state")
+            or ""
+        )
+        if state and state != "AUDIO_PATH_HEALTHY":
+            return 2
         return 0
 
     if args.open_bluetooth_settings:

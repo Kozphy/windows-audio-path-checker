@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "windows-audio-path-checker"
-version = "0.4.0"
-description = "Diagnose why Windows test sounds work while browsers and other apps are silent."
+version = "0.5.0"
+description = "Evidence-driven Windows audio/Bluetooth path diagnostics and safe remediation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
