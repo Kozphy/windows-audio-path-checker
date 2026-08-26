@@ -69,7 +69,7 @@ def proportion_ci(successes: int, total: int, z: float = 1.96) -> dict[str, floa
     """Wilson score interval for a binomial proportion.
 
     The default z=1.96 corresponds approximately to a 95% confidence interval.
-    Returns counts as well as the estimate so reports cannot hide denominator size.
+    Counts are returned with the estimate so reports retain denominator context.
     """
     if total < 0 or successes < 0 or successes > total:
         raise ValueError("Require 0 <= successes <= total")
@@ -91,18 +91,18 @@ def proportion_ci(successes: int, total: int, z: float = 1.96) -> dict[str, floa
 
 
 def aggregate_cases(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate non-excluded benchmark records into transparent headline metrics.
+    """Aggregate non-excluded benchmark records into transparent metrics.
 
     Expected optional booleans include state_match, cause_match, unsafe_action,
     unnecessary_reset, recovery_attempted, recovery_verified, and false_success.
     Missing fields are excluded from that metric's denominator rather than guessed.
     """
-    kept = [record for record in records if not record.get("excluded", False)]
+    all_records = list(records)
+    kept = [record for record in all_records if not record.get("excluded", False)]
 
-    def metric(field: str, *, truth_value: bool = True) -> dict[str, float | int | None]:
+    def metric(field: str) -> dict[str, float | int | None]:
         observed = [record[field] for record in kept if isinstance(record.get(field), bool)]
-        successes = sum(value is truth_value for value in observed)
-        return proportion_ci(successes, len(observed))
+        return proportion_ci(sum(value is True for value in observed), len(observed))
 
     recovery_records = [
         record for record in kept
@@ -112,9 +112,7 @@ def aggregate_cases(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "trials": len(kept),
-        "excluded_trials": sum(bool(record.get("excluded", False)) for record in records)
-        if isinstance(records, list)
-        else None,
+        "excluded_trials": len(all_records) - len(kept),
         "state_accuracy": metric("state_match"),
         "root_cause_accuracy": metric("cause_match"),
         "unsafe_action_rate": metric("unsafe_action"),
