@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .bluetooth_inference import infer_bluetooth_state
+from .device_graph import build_device_graph
+
 
 @dataclass(frozen=True)
 class RootCause:
@@ -122,7 +125,6 @@ def infer_root_causes(snapshot: dict[str, Any], *, limit: int = 3) -> list[dict[
         seen.add(cause_code)
 
         evidence = [f"{code}: {finding.get('detail') or finding.get('title') or ''}".strip()]
-        # Healthy lower layers make a routing/session-level diagnosis stronger.
         if code in {"browser-session-silent", "browser-output-mismatch", "default-device-mismatch"}:
             evidence.extend(supporting[:3])
             if "audio-services-running" in by_code and "app-output-available" in by_code:
@@ -144,14 +146,16 @@ def infer_root_causes(snapshot: dict[str, Any], *, limit: int = 3) -> list[dict[
 
 
 def enrich_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Attach V2 inference metadata without mutating the collector contract."""
+    """Attach inference metadata without mutating the collector contract."""
     enriched = dict(snapshot)
     root_causes = infer_root_causes(snapshot)
     enriched["inference"] = {
-        "schema_version": 1,
+        "schema_version": 3,
         "method": "transparent-rule-weighting",
         "root_causes": root_causes,
         "top_root_cause": root_causes[0] if root_causes else None,
+        "bluetooth_path": infer_bluetooth_state(snapshot),
+        "device_graph": build_device_graph(snapshot),
         "disclaimer": (
             "Scores represent rule-derived diagnostic confidence and are not "
             "population-calibrated probabilities."
