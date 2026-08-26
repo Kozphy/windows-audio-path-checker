@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "windows-audio-path-checker"
-version = "0.5.0"
-description = "Evidence-driven Windows audio/Bluetooth path diagnostics and safe remediation."
+version = "0.6.0"
+description = "Evidence-driven Windows audio/Bluetooth path diagnostics with root-cause inference, timelines, SQLite history, and safe remediation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Zixsa" }]
-keywords = ["windows", "audio", "headphones", "diagnostics", "wasapi"]
+keywords = ["windows", "audio", "headphones", "diagnostics", "wasapi", "reliability", "observability", "incident", "sqlite"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Win32 (MS Windows)",
@@ -41,4 +41,3 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 audio_path_checker = ["browser_test.html"]
-
