@@ -1,11 +1,13 @@
+"""Tests for audio-path timeline fingerprints, diffs, and reliability metrics."""
+
 from __future__ import annotations
 
 import unittest
-
 from audio_path_checker.timeline import compact_state, diff_states, state_fingerprint, timeline_metrics
 
 
 def snapshot(*, muted: bool = False, finding: str = "browser-session-visible", endpoint: str = "Headphones") -> dict:
+    """Build a minimal snapshot for timeline fingerprint and diff tests."""
     return {
         "created_at": "2026-08-26T00:00:00+00:00",
         "core_audio": {
@@ -31,6 +33,8 @@ def snapshot(*, muted: bool = False, finding: str = "browser-session-visible", e
 
 
 class TimelineTests(unittest.TestCase):
+    """State fingerprints, diffs, and metrics over repeated samples."""
+
     def test_fingerprint_is_stable_for_equivalent_state(self) -> None:
         self.assertEqual(state_fingerprint(snapshot()), state_fingerprint(snapshot()))
 

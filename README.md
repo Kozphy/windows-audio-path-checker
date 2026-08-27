@@ -107,8 +107,12 @@ Legacy opt-in repairs remain available:
 ```powershell
 .\.venv\Scripts\python -m audio_path_checker --unmute-browsers
 .\.venv\Scripts\python -m audio_path_checker --enable-bluetooth-adapter
+.\.venv\Scripts\python -m audio_path_checker --add-bluetooth
+.\.venv\Scripts\python -m audio_path_checker --add-bluetooth "EDIFIER W800BT Pro" --bluetooth-address c8247887e57c
 .\.venv\Scripts\python -m audio_path_checker --repair-bluetooth "EDIFIER W800BT Pro"
 ```
+
+**Add Bluetooth device:** GUI button **Add Bluetooth device** or CLI `--add-bluetooth` launches the elevated identity-safe auto-pair script (`scripts/wapc-bt-auto-pair.ps1`). Put the headset in pairing mode (LED flashing) first. Default target is EDIFIER W800BT Pro (`c8247887e57c`).
 
 ## Architecture
 

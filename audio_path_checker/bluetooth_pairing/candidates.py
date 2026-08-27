@@ -2,6 +2,14 @@
 
 Identity filtering (exact target address) runs before ranking/selection so a
 sibling headset can never become the selected recovery target.
+
+Notes:
+    **Connected ≠ audio:** ``AlreadyPairedBluetooth`` and ``AudioEndpoint``
+    classifications describe discovery state, not playback readiness.
+
+    **Pairability vs discovery:** ``determine_pairability`` evaluates only
+    identity-accepted classic candidates; seeing BLE or wrong-address devices
+    during scan does not imply the configured target is pairable.
 """
 
 from __future__ import annotations
@@ -21,10 +29,12 @@ from .identity import (
 BT_CLASSIC_PROTOCOL = "{E0CBF06C-CD8B-4647-BB8A-263B43F0F974}"
 BT_BLE_PROTOCOL = "{BB7BB05E-5972-42B5-94FC-76EAA7084D49}"
 
+# Tri-state pairability for the exact target population (not global discovery).
 PAIRABLE = "PAIRABLE"
 NOT_PAIRABLE = "NOT_PAIRABLE"
 PAIRABILITY_UNKNOWN = "UNKNOWN"
 
+# Candidate classification labels emitted on ranked results.
 CLASSIFICATION = (
     "PairableClassicBluetooth",
     "AlreadyPairedBluetooth",
@@ -38,14 +48,17 @@ CLASSIFICATION = (
 
 
 def _norm_name(value: str | None) -> str:
+    """Normalize a device name for comparison (delegates to identity module)."""
     return normalize_device_name(value)
 
 
 def _norm_addr(value: str | None) -> str:
+    """Normalize a Bluetooth address for comparison."""
     return normalize_bluetooth_address(value)
 
 
 def _protocol_kind(protocol_id: str | None) -> str:
+    """Map a WinRT protocol GUID to ``Bluetooth``, ``BLE``, or ``Unknown``."""
     p = (protocol_id or "").upper()
     if BT_BLE_PROTOCOL.upper() in p:
         return "BLE"
@@ -55,7 +68,20 @@ def _protocol_kind(protocol_id: str | None) -> str:
 
 
 def classify_candidate(candidate: dict[str, Any]) -> str:
-    """Classify a WinRT DeviceInformation candidate."""
+    """Classify a WinRT ``DeviceInformation`` candidate.
+
+    Args:
+        candidate: Raw or identity-annotated candidate dict (``can_pair``,
+            ``is_paired``, ``kind``, ``protocol_id``, ``disposition``, etc.).
+
+    Returns:
+        One of ``CLASSIFICATION`` labels, e.g. ``PairableClassicBluetooth``,
+        ``AlreadyPairedBluetooth``, ``RejectedWrongDevice``.
+
+    Notes:
+        ``AudioEndpoint`` means a Core Audio endpoint was seen in discovery —
+        not that audio playback is verified working.
+    """
     if candidate.get("disposition") == DISPOSITION_REJECTED_WRONG_DEVICE:
         return "RejectedWrongDevice"
     if not candidate.get("enumeration_succeeded", True):
@@ -88,7 +114,24 @@ def score_candidate_with_components(
     target_name: str,
     target_address: str | None = None,
 ) -> tuple[int, list[str]]:
-    """Deterministic score with explainable components."""
+    """Compute a deterministic score with explainable components.
+
+    Args:
+        candidate: Identity-annotated candidate dict.
+        target_name: Configured recovery target name (hint only).
+        target_address: Configured Bluetooth MAC; exact match dominates scoring.
+
+    Returns:
+        Tuple ``(score, components)`` where ``components`` lists human-readable
+        deltas (e.g. ``+1000 exact Bluetooth address``).
+
+    Notes:
+        Wrong-address candidates receive ``-500 REJECTED_WRONG_DEVICE`` and
+        short-circuit. Partial name containment adds ``+20`` whenever the
+        normalized target appears in the candidate name (independent of whether
+        a target address is configured); exact address match still dominates
+        when present (``+1000``).
+    """
     score = 0
     components: list[str] = []
     name = _norm_name(candidate.get("name"))
@@ -176,6 +219,16 @@ def score_candidate(
     target_name: str,
     target_address: str | None = None,
 ) -> int:
+    """Return the total rank score for a candidate (components discarded).
+
+    Args:
+        candidate: Identity-annotated candidate dict.
+        target_name: Configured recovery target name.
+        target_address: Configured Bluetooth MAC when known.
+
+    Returns:
+        Integer score; higher is preferred for ``PairAsync`` selection.
+    """
     total, _ = score_candidate_with_components(
         candidate, target_name=target_name, target_address=target_address
     )
@@ -188,7 +241,23 @@ def determine_pairability(
     classic_enumeration_succeeded: bool,
     aep_enumeration_succeeded: bool,
 ) -> str:
-    """Tri-state pairability for the *exact target* population only."""
+    """Determine tri-state pairability for the exact target population only.
+
+    Args:
+        candidates: Identity-accepted candidates (typically from
+            ``filter_candidates_by_identity``).
+        classic_enumeration_succeeded: Whether classic DeviceInformation scan
+            completed without error.
+        aep_enumeration_succeeded: Whether Association Endpoint scan completed.
+
+    Returns:
+        ``PAIRABLE``, ``NOT_PAIRABLE``, or ``PAIRABILITY_UNKNOWN``.
+
+    Notes:
+        Discovery of *any* Bluetooth device does not set pairability — only
+        unpaired classic candidates with ``can_pair=True`` yield ``PAIRABLE``.
+        ``UNKNOWN`` indicates enumeration failure, not "headset off".
+    """
     if not classic_enumeration_succeeded and not aep_enumeration_succeeded:
         return PAIRABILITY_UNKNOWN
 
@@ -229,6 +298,20 @@ def rank_candidates(
     classic_enumeration_succeeded: bool = True,
     aep_enumeration_succeeded: bool = True,
 ) -> list[dict[str, Any]]:
+    """Rank candidates after identity filter, with scores and pairability.
+
+    Args:
+        candidates: Raw WinRT candidate dicts from discovery.
+        target_name: Configured target friendly name.
+        target_address: Configured Bluetooth MAC (authoritative when set).
+        classic_enumeration_succeeded: Classic enumeration success flag.
+        aep_enumeration_succeeded: AEP enumeration success flag.
+
+    Returns:
+        List sorted by descending ``score``; each item includes
+        ``classification``, ``score_components``, ``rank``,
+        ``target_pairability``, and ``exact_target_discovered``.
+    """
     filtered = filter_candidates_by_identity(
         candidates, target_name=target_name, target_address=target_address
     )
@@ -264,7 +347,21 @@ def select_pairable_candidate(
     *,
     pairability: str | None = None,
 ) -> dict[str, Any] | None:
-    """Select only identity-accepted candidates for PairAsync / already-paired."""
+    """Select the best identity-accepted candidate for pairing or reconnect.
+
+    Args:
+        ranked: Output of ``rank_candidates`` (sorted, scored).
+        pairability: Tri-state from ``determine_pairability``; when
+            ``PAIRABILITY_UNKNOWN``, returns ``None`` (do not pair blindly).
+
+    Returns:
+        First suitable candidate preferring unpaired ``can_pair=True``, else
+        already-paired identity match, else ``None``.
+
+    Notes:
+        Returns ``None`` when pairability is undetermined even if candidates
+        were discovered — discovery capability ≠ pairability.
+    """
     if pairability == PAIRABILITY_UNKNOWN:
         return None
     for c in ranked:
@@ -284,7 +381,20 @@ def select_pairable_candidate(
 def group_candidates_by_physical_device(
     candidates: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Group endpoints by Bluetooth address or container id."""
+    """Group discovery endpoints by physical Bluetooth device.
+
+    Args:
+        candidates: Raw or ranked candidate dicts.
+
+    Returns:
+        Map keyed by normalized Bluetooth address, or ``container_id``/``id``
+        when address is missing. Values contain ``address``, ``container_id``,
+        ``name``, and ``endpoints`` (list of member candidates).
+
+    Notes:
+        Multiple WinRT endpoints (classic, AEP, audio) for one radio share
+        one group — pairing one endpoint does not prove all audio paths exist.
+    """
     groups: dict[str, dict[str, Any]] = {}
     for c in candidates:
         key = _norm_addr(c.get("device_address") or c.get("address"))
@@ -307,7 +417,21 @@ def update_candidate_history(
     *,
     now: datetime | None = None,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
-    """Merge candidate into history. Returns (history, can_pair_became_true)."""
+    """Merge a scan candidate into rolling discovery history.
+
+    Args:
+        history: Mutable map of candidate key → history entry.
+        candidate: Latest observed candidate dict.
+        now: UTC timestamp for ``first_seen`` / ``last_seen``; defaults to now.
+
+    Returns:
+        Tuple ``(history, can_pair_became_true)`` where the bool is True when
+        ``can_pair`` transitioned from False to True across scans.
+
+    Notes:
+        Tracks ``CanPair`` transitions — useful when a device is discoverable
+        before it enters pairable mode.
+    """
     now = now or datetime.now(timezone.utc)
     key = str(candidate.get("id") or candidate.get("device_address") or candidate.get("name"))
     prev_can = None
@@ -337,7 +461,25 @@ def build_rank_result(
     classic_enumeration_succeeded: bool = True,
     aep_enumeration_succeeded: bool = True,
 ) -> dict[str, Any]:
-    """Full ranker payload including identity diagnostics."""
+    """Build the full ranker payload for the PowerShell orchestrator.
+
+    Args:
+        candidates: Raw WinRT candidates from discovery.
+        target_name: Configured target name.
+        target_address: Configured Bluetooth MAC (identity anchor).
+        classic_enumeration_succeeded: Classic enum success flag.
+        aep_enumeration_succeeded: AEP enum success flag.
+
+    Returns:
+        Dict with ``schema_version``, ``ranked``, ``selected``, ``rejected``,
+        ``groups``, ``pairability``, ``pairable_found``,
+        ``exact_target_discovered``, ``any_bluetooth_device_discovered``,
+        ``exact_target_already_paired``, and ``target_discovered``.
+
+    Notes:
+        ``pairable_found`` requires a selected candidate with ``can_pair``;
+        ``exact_target_already_paired`` does not imply audio endpoints are ready.
+    """
     filtered = filter_candidates_by_identity(
         candidates, target_name=target_name, target_address=target_address
     )

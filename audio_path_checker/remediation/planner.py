@@ -1,4 +1,21 @@
-"""Risk-aware remediation planning. Lowest risk first; never silent wipe."""
+"""Risk-aware remediation planning; never silent wipe / never R5 for wrong default.
+
+Maps diagnosed ``AudioPathState`` and primary root cause to ordered action
+lists tagged R0–R5. Branch order is **usefulness-first** (recommended action
+is ``actions[0]``), not a strict ascending risk sort in every branch.
+
+Signal→action mapping examples:
+
+* ``ENDPOINT_NOT_DEFAULT`` / ``wrong_default_output`` → R1 set default first,
+  then R0 open Sound settings (never R5 re-pair)
+* ``RADIO_UNAVAILABLE`` → R3 enable adapter
+* ``DEVICE_NOT_PAIRED`` → R0 open Settings, R1 WinRT auto-pair
+* ``AUDIO_SERVICE_FAILURE`` → R2 restart Audiosrv / Endpoint Builder
+* Stack breakages (no endpoint, no A2DP, not connected) → R1 refresh → R2
+  services → R3 re-enumerate → R4 radio bounce → R5 scoped re-pair
+
+Wrong default output must never trigger pairing reset.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +23,7 @@ from typing import Any
 
 from ..models.states import AudioPathState
 
-# R0 observation … R5 remove/re-pair
+# R0 observation … R5 remove/re-pair (lowest index = safest action).
 RISK_ORDER = ("R0", "R1", "R2", "R3", "R4", "R5")
 
 
@@ -17,13 +34,29 @@ def plan_remediation(
     evidence: dict[str, Any],
     mode: str = "diagnose",
 ) -> dict[str, Any]:
-    """
-    Build a remediation plan.
+    """Build a risk-gated remediation plan from diagnosis output.
 
-    Modes:
-      diagnose / dry-run — recommend only
-      repair — allow up to R3 (non-destructive re-enumerate / enable)
-      aggressive-repair — allow up to R5 (scoped pairing clear)
+    Args:
+        classification: Output of :func:`~..diagnostics_engine.classifier.classify_state`.
+        hypotheses: Ranked causes from
+            :func:`~..diagnostics_engine.root_cause.rank_hypotheses`.
+        evidence: Normalized evidence (used for device name scoping).
+        mode: Execution cap — ``diagnose``/``dry-run`` (R0), ``repair`` (R3),
+            or ``aggressive-repair`` (R5).
+
+    Returns:
+        Plan dict with:
+
+        * ``recommended`` — first action in the branch list (usefulness order)
+        * ``actions`` — subset of planned actions allowed by ``max_risk``
+        * ``blocked_actions`` — planned actions above ``max_risk``
+        * ``executable`` — whether **the recommended action itself** is within
+          ``max_risk`` (can be False while ``actions`` still holds safer items)
+
+    Notes:
+        Mode gates execution eligibility, not recommendation. Diagnose mode
+        still recommends the most useful action so operators see what would run
+        under ``--repair`` / ``--aggressive-repair``.
     """
     state = str(classification.get("state") or AudioPathState.UNKNOWN.value)
     top = hypotheses[0] if hypotheses else {"cause": "unknown", "confidence": 0.0}
@@ -57,6 +90,14 @@ def plan_remediation(
 
 
 def _risk_rank(risk: str) -> int:
+    """Return numeric index for risk label (lower = safer).
+
+    Args:
+        risk: Risk level string (``R0``–``R5``).
+
+    Returns:
+        Index in :data:`RISK_ORDER`, or ``99`` for unknown labels.
+    """
     try:
         return RISK_ORDER.index(risk)
     except ValueError:
@@ -66,6 +107,18 @@ def _risk_rank(risk: str) -> int:
 def _actions_for(
     state: str, cause: str, evidence: dict[str, Any]
 ) -> list[dict[str, Any]]:
+    """Map state and cause signals to ordered remediation actions.
+
+    Args:
+        state: Classified :class:`~..models.states.AudioPathState` value.
+        cause: Top hypothesis cause string.
+        evidence: Evidence document (device name for scoping).
+
+    Returns:
+        Actions sorted lowest risk first. Each action includes ``action``,
+        ``risk`` (R0–R5), ``reason``, ``requires_elevation``, ``scoped_device``,
+        and ``verify`` (post-action checklist feature names).
+    """
     device = (evidence.get("device") or {}).get("name") or "target headset"
     actions: list[dict[str, Any]] = []
 
@@ -180,6 +233,16 @@ def _actions_for(
 
 
 def _notes(state: str, cause: str, mode: str) -> list[str]:
+    """Build human-readable plan footnotes.
+
+    Args:
+        state: Classified state value.
+        cause: Primary root-cause label.
+        mode: Remediation mode string.
+
+    Returns:
+        List of explanatory note strings for the plan output.
+    """
     notes = [
         "Bluetooth Connected is not equivalent to Audio Working.",
         f"Diagnosed state={state}; primary_cause={cause}; mode={mode}.",

@@ -1,3 +1,5 @@
+"""Tests for SQLite scan and timeline persistence."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -9,6 +11,8 @@ from audio_path_checker.storage import connect, store_snapshot, store_timeline, 
 
 
 class StorageTests(unittest.TestCase):
+    """store_snapshot, store_timeline, and summary aggregate correctly."""
+
     def test_store_snapshot_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.db"
@@ -34,6 +38,7 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(result["top_root_causes"][0]["code"], "master-output-muted")
 
     def test_store_timeline_persists_transitions(self) -> None:
+        """Timeline rows and transition events survive a round trip."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.db"
             with connect(path) as connection:

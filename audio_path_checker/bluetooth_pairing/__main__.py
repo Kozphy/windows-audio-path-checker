@@ -1,4 +1,13 @@
-"""CLI: rank Bluetooth candidates from JSON on stdin."""
+"""CLI entry point: rank Bluetooth candidates from JSON on stdin.
+
+Used by the PowerShell auto-pair orchestrator to apply identity-safe ranking
+in Python. stdin carries WinRT ``DeviceInformation`` candidates; stdout emits
+a full ``build_rank_result`` payload including identity rejections.
+
+Notes:
+    Target address (``--target-address``) is authoritative for identity;
+    ``--target-name`` is a secondary hint when address matching is unavailable.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +20,17 @@ from .identity import DISPOSITION_REJECTED_WRONG_DEVICE
 
 
 def _parse_candidates(raw: str) -> tuple[list[dict] | None, str | None]:
+    """Parse ranker stdin JSON into a candidate list.
+
+    Args:
+        raw: UTF-8 text read from stdin (single object or array).
+
+    Returns:
+        Tuple ``(candidates, error_code)``. On success ``error_code`` is
+        ``None``. On failure ``candidates`` is ``None`` and ``error_code`` is
+        one of ``empty_input``, ``RANKER_INPUT_INVALID``, or ``NO_CANDIDATES``.
+        A dict input with an ``error`` key surfaces that error string.
+    """
     if not raw.strip():
         return None, "empty_input"
     try:
@@ -29,6 +49,18 @@ def _parse_candidates(raw: str) -> tuple[list[dict] | None, str | None]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the ``rank`` subcommand: filter, score, and emit ranked JSON.
+
+    Args:
+        argv: Optional argument vector (defaults to ``sys.argv[1:]``).
+
+    Returns:
+        ``0`` on success or empty candidate list; ``1`` on parse/rank errors.
+
+    Notes:
+        Appends ``identity_rejections`` (wrong-address siblings) to the output
+        for orchestrator diagnostics.
+    """
     parser = argparse.ArgumentParser(description="Rank Bluetooth pairing candidates.")
     parser.add_argument("command", nargs="?", default="rank", choices=["rank"])
     parser.add_argument("--target-name", default="EDIFIER W800BT Pro")

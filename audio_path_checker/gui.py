@@ -1,3 +1,15 @@
+"""Tkinter GUI for interactive Windows audio-path diagnostics.
+
+The GUI is the default entry surface when ``windows-audio-checker`` is launched
+without CLI flags.  It helps users answer: *Windows test sound works, but why
+are apps silent?* by scanning playback devices, per-app audio sessions, and
+Bluetooth state, then surfacing actionable findings.
+
+Long-running operations (scan, browser unmute, Bluetooth repair) run on worker
+threads so the window stays responsive; UI updates are marshalled back onto the
+main thread via ``root.after``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +31,9 @@ from .diagnostics import (
     unmute_silent_browser_sessions,
 )
 from .bluetooth import (
+    DEFAULT_ADD_BLUETOOTH_ADDRESS,
+    DEFAULT_ADD_BLUETOOTH_NAME,
+    add_bluetooth_device,
     disabled_bluetooth_adapters,
     enable_bluetooth_adapter,
     preferred_bluetooth_adapter,
@@ -28,7 +43,14 @@ from .bluetooth import (
 
 
 class AudioCheckerApp:
+    """Main window: scan results, app sessions, sound tests, and Bluetooth actions."""
+
     def __init__(self, root: tk.Tk) -> None:
+        """Build the layout, wire controls, and schedule an initial scan.
+
+        Args:
+            root: Root Tk window provided by :func:`main`.
+        """
         self.root = root
         self.snapshot: dict = {}
         self.device_by_label: dict[str, int] = {}
@@ -99,16 +121,22 @@ class AudioCheckerApp:
         ).pack(side=LEFT, padx=(8, 0))
         ttk.Button(
             bt_bar,
+            text="Add Bluetooth device",
+            command=self.add_bluetooth,
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Button(
+            bt_bar,
             text="Repair Bluetooth pairing",
             command=self.repair_bluetooth,
         ).pack(side=LEFT, padx=(8, 0))
         ttk.Label(
             bt_bar,
             text=(
-                "Enable adapter: 'Couldn't connect'. "
-                "Repair pairing: icon desync / stuck Remove device."
+                "Add: pair headset (pairing mode). "
+                "Enable: 'Couldn't connect'. "
+                "Repair: icon desync / stuck Remove."
             ),
-            wraplength=420,
+            wraplength=360,
         ).pack(side=LEFT, padx=(12, 0))
 
         test_frame = ttk.LabelFrame(outer, text="Sound path tests", padding=10)
@@ -210,11 +238,13 @@ class AudioCheckerApp:
         root.after(300, self.start_scan)
 
     def start_scan(self) -> None:
+        """Kick off a background evidence collection pass."""
         self.scan_button.configure(state="disabled")
         self.status.set("Scanning playback devices and app audio sessions…")
         threading.Thread(target=self._scan_worker, daemon=True).start()
 
     def _scan_worker(self) -> None:
+        """Collect snapshot off the UI thread and hand off to the main loop."""
         try:
             snapshot = collect_snapshot()
             self.root.after(0, lambda: self._display_snapshot(snapshot))
@@ -222,6 +252,11 @@ class AudioCheckerApp:
             self.root.after(0, lambda: self._show_error("Scan failed", exc))
 
     def _display_snapshot(self, snapshot: dict) -> None:
+        """Render findings, sessions, JSON report, and output-device picker.
+
+        Args:
+            snapshot: Raw diagnostic snapshot from :func:`collect_snapshot`.
+        """
         self.snapshot = snapshot
         for item in self.results.get_children():
             self.results.delete(item)
@@ -304,6 +339,7 @@ class AudioCheckerApp:
         self.scan_button.configure(state="normal")
 
     def play_tone(self) -> None:
+        """Play a test tone on the combobox-selected output device."""
         label = self.device_choice.get()
         if not label:
             messagebox.showwarning(
@@ -316,6 +352,7 @@ class AudioCheckerApp:
             self._show_error("The app sound test failed", exc)
 
     def stop_tone(self) -> None:
+        """Stop any in-progress app sound test."""
         try:
             stop_test_tone()
             self.status.set("Sound test stopped.")
@@ -323,6 +360,7 @@ class AudioCheckerApp:
             self._show_error("Could not stop the sound test", exc)
 
     def open_browser_test(self) -> None:
+        """Open the bundled HTML page for browser-side audio verification."""
         test_page = Path(__file__).with_name("browser_test.html").resolve()
         if not webbrowser.open(test_page.as_uri()):
             messagebox.showinfo(
@@ -334,8 +372,8 @@ class AudioCheckerApp:
         )
 
     def unmute_browsers(self) -> None:
-        if not messagebox.askyesno(
-            "Unmute browser sessions?",
+        """Confirm, then unmute/low-volume browser sessions and rescan."""
+        if not messagebox.askyesno(            "Unmute browser sessions?",
             (
                 "This will unmute recognized browser sessions and raise any "
                 "browser session below 50% to 50%.\n\n"
@@ -386,6 +424,7 @@ class AudioCheckerApp:
             )
 
     def enable_bluetooth(self) -> None:
+        """Re-enable a disabled Bluetooth adapter after user confirmation (UAC)."""
         if not self.snapshot:
             messagebox.showwarning("No scan yet", "Run a scan first.")
             return
@@ -466,7 +505,137 @@ class AudioCheckerApp:
                 ),
             )
 
+    def add_bluetooth(self) -> None:
+        """Prompt for target name/MAC, then elevate identity-safe auto-pair.
+
+        Address (when ≥12 hex) dominates success criteria so a sibling headset
+        cannot count as SUCCESS. User must put the device in pairing mode
+        before approving UAC; dialog defaults to the EDIFIER W800BT Pro target.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Bluetooth device")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill=BOTH, expand=True)
+        ttk.Label(
+            frame,
+            text=(
+                "Put the headset in pairing mode (LED flashing) before continuing.\n"
+                "Disconnect it from phones if multipoint is active.\n"
+                "Windows will ask for Administrator permission (UAC)."
+            ),
+            wraplength=420,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(0, 10))
+
+        form = ttk.Frame(frame)
+        form.pack(fill=X)
+        ttk.Label(form, text="Name:").grid(row=0, column=0, sticky="w")
+        name_var = tk.StringVar(value=DEFAULT_ADD_BLUETOOTH_NAME)
+        name_entry = ttk.Entry(form, textvariable=name_var, width=42)
+        name_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=2)
+        ttk.Label(form, text="Address:").grid(row=1, column=0, sticky="w")
+        address_var = tk.StringVar(value=DEFAULT_ADD_BLUETOOTH_ADDRESS)
+        address_entry = ttk.Entry(form, textvariable=address_var, width=42)
+        address_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=2)
+        form.columnconfigure(1, weight=1)
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill=X, pady=(14, 0))
+
+        def on_cancel() -> None:
+            dialog.destroy()
+
+        def on_start() -> None:
+            name = name_var.get().strip()
+            address = address_var.get().strip()
+            if not name:
+                messagebox.showwarning(
+                    "Name required",
+                    "Enter the Bluetooth device name.",
+                    parent=dialog,
+                )
+                return
+            if not address:
+                messagebox.showwarning(
+                    "Address required",
+                    "Enter the Bluetooth MAC address.",
+                    parent=dialog,
+                )
+                return
+            dialog.destroy()
+            self.scan_button.configure(state="disabled")
+            self.status.set(
+                f"Adding Bluetooth device {name}… Approve UAC and keep pairing mode on."
+            )
+            threading.Thread(
+                target=self._add_bluetooth_worker,
+                args=(name, address),
+                daemon=True,
+            ).start()
+
+        ttk.Button(buttons, text="Cancel", command=on_cancel).pack(side=RIGHT)
+        ttk.Button(
+            buttons, text="Start auto-pair", command=on_start, style="Accent.TButton"
+        ).pack(side=RIGHT, padx=(0, 8))
+        name_entry.focus_set()
+        dialog.bind("<Escape>", lambda _event: on_cancel())
+        dialog.wait_window()
+
+    def _add_bluetooth_worker(self, name: str, address: str) -> None:
+        try:
+            result = add_bluetooth_device(
+                name=name,
+                address=address,
+                elevate=True,
+                wait=True,
+            )
+            snapshot = collect_snapshot()
+            self.root.after(
+                0, lambda: self._after_add_bluetooth(result, snapshot)
+            )
+        except Exception as exc:
+            self.root.after(
+                0,
+                lambda: self._show_error("Add Bluetooth device failed", exc),
+            )
+
+    def _after_add_bluetooth(self, result: dict, snapshot: dict) -> None:
+        self._display_snapshot(snapshot)
+        classification = result.get("classification") or "UNKNOWN"
+        overall = result.get("overall_result") or (
+            "SUCCESS" if result.get("success") else "FAILED"
+        )
+        log_tail = "\n".join(
+            line for line in str(result.get("log") or "").splitlines() if line
+        )[-800:]
+        summary = (
+            f"Target: {result.get('target_name')} ({result.get('target_address')})\n"
+            f"Result: {overall}\n"
+            f"Classification: {classification}\n"
+            f"Exit code: {result.get('exit_code')}\n\n"
+            f"{log_tail or 'No log captured (UAC may have been declined).'}"
+        )
+        if result.get("success"):
+            messagebox.showinfo("Bluetooth device added", summary)
+        else:
+            messagebox.showwarning(
+                "Add Bluetooth device finished with errors",
+                summary
+                + "\n\nKeep the headset in pairing mode and retry, "
+                "or use Open Bluetooth settings.",
+            )
+
     def repair_bluetooth(self) -> None:
+        """Clear pairing cache for a chosen headset after confirmation (UAC).
+
+        Uses :func:`~audio_path_checker.bluetooth.preferred_bluetooth_repair_target`:
+        endpoint-matched headset when identifiable, otherwise the first paired
+        headset that still has a Bluetooth address. Requires a prior scan.
+        """
         if not self.snapshot:
             messagebox.showwarning("No scan yet", "Run a scan first.")
             return
@@ -538,6 +707,7 @@ class AudioCheckerApp:
         )
 
     def save_current_report(self) -> None:
+        """Prompt for a path and write the latest snapshot as JSON."""
         if not self.snapshot:
             messagebox.showwarning("No report", "Run a scan first.")
             return
@@ -569,6 +739,7 @@ class AudioCheckerApp:
 
 
 def main() -> None:
+    """Create the Tk root window and enter the event loop."""
     root = tk.Tk()
     AudioCheckerApp(root)
     root.mainloop()

@@ -1,3 +1,18 @@
+"""Windows playback-path snapshot collection and rule-based findings.
+
+Gathers read-only evidence from Windows audio services, PortAudio, Core Audio
+(pycaw), and Bluetooth subsystems, then derives user-actionable findings for
+common silent-headphone scenarios (muted master volume, per-app routing,
+browser session silence, Bluetooth adapter/state desync).
+
+Public entry points:
+
+* :func:`collect_snapshot` — full system scan with embedded findings
+* :func:`analyze_snapshot` — re-run finding rules on an existing snapshot
+* :func:`play_test_tone` / :func:`stop_test_tone` — app-level playback test
+* :func:`unmute_silent_browser_sessions` — targeted browser volume repair
+"""
+
 from __future__ import annotations
 
 import json
@@ -29,6 +44,7 @@ SEVERITY_ORDER = {"critical": 0, "warning": 1, "ok": 2, "info": 3}
 
 
 def _error(source: str, exc: BaseException) -> dict[str, str]:
+    """Build a structured collector error record."""
     return {
         "source": source,
         "type": type(exc).__name__,
@@ -37,6 +53,7 @@ def _error(source: str, exc: BaseException) -> dict[str, str]:
 
 
 def _friendly_process_name(session: Any) -> str:
+    """Resolve a display name for a Core Audio session object."""
     process = getattr(session, "Process", None)
     if process is not None:
         try:
@@ -51,7 +68,12 @@ def _friendly_process_name(session: Any) -> str:
 
 
 def _init_com() -> tuple[Any, Any]:
-    """Initialize COM when available, returning cleanup functions."""
+    """Initialize COM when available for pycaw/comtypes calls.
+
+    Returns:
+        Tuple of ``(CoInitialize, CoUninitialize)`` callables, or
+        ``(None, None)`` when COM is unavailable.
+    """
     try:
         from comtypes import CoInitialize, CoUninitialize
 
@@ -62,6 +84,12 @@ def _init_com() -> tuple[Any, Any]:
 
 
 def _collect_audio_services() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Query Windows Audio and Audio Endpoint Builder service status.
+
+    Returns:
+        Tuple of ``(services, errors)`` where each service dict includes
+        ``name``, ``friendly_name``, ``status``, and ``start_type``.
+    """
     services: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     if sys.platform != "win32":
@@ -93,6 +121,12 @@ def _collect_audio_services() -> tuple[list[dict[str, Any]], list[dict[str, str]
 
 
 def _collect_portaudio() -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Enumerate app-visible playback devices via sounddevice (PortAudio).
+
+    Returns:
+        Tuple of ``(result, errors)`` where ``result`` contains default output
+        index/name, host APIs, and filtered output device list.
+    """
     result: dict[str, Any] = {
         "default_output_index": None,
         "default_output_name": None,
@@ -152,6 +186,7 @@ def _collect_portaudio() -> tuple[dict[str, Any], list[dict[str, str]]]:
 def _session_payload(
     session: Any, output_device: str | None, output_device_id: str | None
 ) -> dict[str, Any]:
+    """Serialize one Core Audio session to a JSON-friendly dict."""
     simple_volume = session.SimpleAudioVolume
     process_name = _friendly_process_name(session)
     return {
@@ -169,6 +204,12 @@ def _session_payload(
 
 
 def _iter_device_sessions(device: Any) -> Iterable[Any]:
+    """Return AudioSession wrappers for all sessions on a playback device.
+
+    Returns an empty list when the device has no ``AudioSessionManager``.
+    Despite the historical helper name, this builds a concrete list rather
+    than a generator.
+    """
     from pycaw.api.audiopolicy import IAudioSessionControl2
     from pycaw.utils import AudioSession
 
@@ -189,6 +230,15 @@ def _iter_device_sessions(device: Any) -> Iterable[Any]:
 
 
 def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Collect default endpoint, master volume, and per-app session state.
+
+    Walks all active render devices when possible; falls back to default-endpoint
+    sessions on older Windows builds or partial COM availability.
+
+    Returns:
+        Tuple of ``(result, errors)`` with ``default_endpoint``, master
+        volume/mute, and deduplicated ``sessions`` list.
+    """
     result: dict[str, Any] = {
         "default_endpoint": None,
         "master_volume": None,
@@ -287,7 +337,16 @@ def _collect_core_audio() -> tuple[dict[str, Any], list[dict[str, str]]]:
 
 
 def collect_snapshot() -> dict[str, Any]:
-    """Collect a read-only snapshot of the Windows playback path."""
+    """Collect a read-only snapshot of the Windows playback path.
+
+    Aggregates service health, PortAudio devices, Core Audio sessions,
+    Bluetooth pairing state, collector errors, and rule-derived ``findings``.
+
+    Returns:
+        Schema v4 snapshot dict with ``created_at``, ``system``, ``services``,
+        ``portaudio``, ``core_audio``, ``bluetooth``, ``errors``, and
+        ``findings`` keys.
+    """
     errors: list[dict[str, str]] = []
     services, service_errors = _collect_audio_services()
     portaudio, portaudio_errors = _collect_portaudio()
@@ -322,6 +381,7 @@ def collect_snapshot() -> dict[str, Any]:
 def _finding(
     severity: str, code: str, title: str, detail: str, action: str
 ) -> dict[str, str]:
+    """Build a standardized finding record for GUI and inference layers."""
     return {
         "severity": severity,
         "code": code,
@@ -332,6 +392,7 @@ def _finding(
 
 
 def _device_words(value: str | None) -> set[str]:
+    """Extract significant lowercase tokens from a device name for fuzzy match."""
     if not value:
         return set()
     ignored = {
@@ -355,6 +416,19 @@ def _device_words(value: str | None) -> set[str]:
 
 
 def likely_same_device(first: str | None, second: str | None) -> bool:
+    """Heuristically decide whether two endpoint names refer to the same device.
+
+    Uses substring containment and token overlap so minor naming differences
+    between Core Audio and PortAudio labels still match (e.g. headset suffixes).
+
+    Args:
+        first: First device or endpoint label.
+        second: Second device or endpoint label.
+
+    Returns:
+        True when names appear to describe the same physical output; also True
+        when either name is missing (insufficient data to disagree).
+    """
     if not first or not second:
         return True
     first_folded = first.casefold()
@@ -370,6 +444,18 @@ def likely_same_device(first: str | None, second: str | None) -> bool:
 
 
 def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    """Derive sorted, actionable findings from a snapshot without re-collecting.
+
+    Rules cover platform support, service health, master volume, app vs Windows
+    default mismatch, browser session visibility/routing, Bluetooth adapter and
+    pairing desync, and partial-scan errors.
+
+    Args:
+        snapshot: Dict from :func:`collect_snapshot` or compatible schema.
+
+    Returns:
+        Findings sorted by severity (critical first) then title.
+    """
     findings: list[dict[str, str]] = []
     system = snapshot.get("system", {})
     services = snapshot.get("services", [])
@@ -714,6 +800,16 @@ def analyze_snapshot(snapshot: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def output_device_choices(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """List PortAudio outputs suitable for the GUI test-tone picker.
+
+    Prefers WASAPI host devices when present; otherwise returns all outputs.
+
+    Args:
+        snapshot: Scan dict containing ``portaudio.output_devices``.
+
+    Returns:
+        Device dicts with ``index``, ``name``, ``host_api``, and related fields.
+    """
     devices = snapshot.get("portaudio", {}).get("output_devices", [])
     wasapi = [
         device
@@ -724,7 +820,19 @@ def output_device_choices(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def play_test_tone(device_index: int | None = None, seconds: float = 2.0) -> str:
-    """Play a quiet stereo test tone through an app-level output."""
+    """Play a quiet test tone through an app-level output path.
+
+    Uses non-blocking playback with a short fade envelope to avoid clicks.
+    Validates the PortAudio/app path independently of Windows tray UI state.
+    Stereo when the selected device reports ≥2 output channels; otherwise mono.
+
+    Args:
+        device_index: PortAudio output index; ``None`` uses the default device.
+        seconds: Tone duration.
+
+    Returns:
+        Human-readable confirmation naming the selected output device.
+    """
     import numpy as np
     import sounddevice as sd
 
@@ -756,13 +864,29 @@ def play_test_tone(device_index: int | None = None, seconds: float = 2.0) -> str
 
 
 def stop_test_tone() -> None:
+    """Stop any in-progress PortAudio test tone started by :func:`play_test_tone`."""
     import sounddevice as sd
 
     sd.stop()
 
 
 def unmute_silent_browser_sessions(minimum_volume: float = 0.5) -> list[str]:
-    """Unmute only recognized browser sessions and raise very low ones."""
+    """Unmute only recognized browser sessions and raise very low ones.
+
+    Targets processes listed in :data:`BROWSER_PROCESSES`; does not alter
+    non-browser app sessions.
+
+    Args:
+        minimum_volume: Volume scalar passed to pycaw when raising quiet
+            sessions. Callers should pass a value in ``[0.0, 1.0]``; this
+            function does not clamp out-of-range inputs.
+
+    Returns:
+        Descriptions of sessions that were changed.
+
+    Raises:
+        RuntimeError: When not running on Windows.
+    """
     if sys.platform != "win32":
         raise RuntimeError("Browser audio sessions are available only on Windows.")
 
@@ -797,12 +921,29 @@ def unmute_silent_browser_sessions(minimum_volume: float = 0.5) -> list[str]:
 
 
 def open_windows_settings(uri: str) -> None:
+    """Open a Windows Settings deep link (``ms-settings:...`` URI).
+
+    Args:
+        uri: Settings protocol URI understood by ``os.startfile``.
+
+    Raises:
+        RuntimeError: When not running on Windows.
+    """
     if sys.platform != "win32":
         raise RuntimeError("Windows Settings links are available only on Windows.")
     os.startfile(uri)  # type: ignore[attr-defined]
 
 
 def save_report(snapshot: dict[str, Any], path: str | Path) -> Path:
+    """Write a snapshot dict to JSON on disk for support or GitHub issues.
+
+    Args:
+        snapshot: Full scan payload to persist.
+        path: Destination file path.
+
+    Returns:
+        Resolved path of the written file.
+    """
     destination = Path(path)
     destination.write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -811,5 +952,7 @@ def save_report(snapshot: dict[str, Any], path: str | Path) -> Path:
 
 
 def browser_processes() -> Iterable[str]:
+    """Return sorted executable names treated as browsers for session rules."""
     return sorted(BROWSER_PROCESSES)
+
 

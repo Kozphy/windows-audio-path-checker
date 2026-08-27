@@ -1,4 +1,17 @@
-"""Phase 1 — structured evidence collection for headset audio path."""
+"""Structured evidence collection for the Bluetooth headset audio path.
+
+Builds a normalized, read-only evidence document from multiple sources:
+
+1. **WinRT capability probe** (``platform.winrt.probe_winrt_capabilities``) —
+   discovery API availability before any pairing attempt.
+2. **PowerShell collector** (``scripts/Collectors/Evidence.ps1`` on Windows) —
+   Bluetooth adapter, device pair/connect, PnP nodes, audio endpoints, services.
+3. **Optional Python snapshot** — Core Audio defaults and service status from
+   an existing collector when injected by the caller.
+
+The merged document flows to ``evidence_feature_vector`` for classification.
+Collection never restarts services or mutates device state.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +27,23 @@ from ..platform.winrt import probe_winrt_capabilities
 
 
 def _scripts_root() -> Path:
+    """Return the repository ``scripts/`` directory path.
+
+    Returns:
+        Absolute path to the ``scripts`` folder at the repo root.
+    """
     return Path(__file__).resolve().parents[2] / "scripts"
 
 
 def _service_status_map(services: dict[str, Any] | None) -> dict[str, str]:
+    """Coerce service status values to plain strings.
+
+    Args:
+        services: Raw ``services`` section from evidence or the PS collector.
+
+    Returns:
+        Mapping of service name → status string (empty dict if input invalid).
+    """
     out: dict[str, str] = {}
     if not isinstance(services, dict):
         return out
@@ -29,7 +55,16 @@ def _service_status_map(services: dict[str, Any] | None) -> dict[str, str]:
 def _enrich_from_snapshot(
     evidence: dict[str, Any], snapshot: dict[str, Any] | None
 ) -> dict[str, Any]:
-    """Merge Core Audio / PortAudio defaults from the existing collector when present."""
+    """Merge Core Audio defaults and service status from a Python snapshot.
+
+    Args:
+        evidence: In-progress evidence document to update in place.
+        snapshot: Optional legacy collector output with ``core_audio`` and
+            ``services`` sections.
+
+    Returns:
+        The same ``evidence`` dict with ``audio`` and ``services`` enriched.
+    """
     if not snapshot:
         return evidence
     core = snapshot.get("core_audio") or {}
@@ -64,11 +99,30 @@ def collect_evidence(
     include_winrt_probe: bool = True,
     timeout: int = 90,
 ) -> dict[str, Any]:
-    """
-    Collect normalized path evidence. Read-only: never restarts services.
+    """Collect normalized Bluetooth audio-path evidence (read-only).
 
-    On non-Windows, returns a stub evidence document suitable for unit tests
-    when callers inject fields via ``snapshot`` / mocks.
+    On Windows, invokes ``Evidence.ps1`` and optionally the WinRT probe. On
+    non-Windows platforms, returns the default stub and only merges selected
+    ``core_audio`` / ``services`` fields from ``snapshot`` (not a full evidence
+    substitute unless tests build those keys carefully).
+
+    Args:
+        device_name: Friendly name filter for the target headset.
+        snapshot: Optional Python-side collector output to merge after PS
+            collection (Core Audio defaults, Audiosrv status).
+        include_winrt_probe: When True, attach WinRT discovery capability to
+            ``evidence["capabilities"]``.
+        timeout: Maximum seconds to wait for the PowerShell collector.
+
+    Returns:
+        Evidence document with keys ``device``, ``bluetooth``, ``pnp``,
+        ``audio``, ``services``, ``environment``, ``capabilities``, and
+        ``collection_errors``. Errors are non-fatal and recorded in
+        ``collection_errors``.
+
+    Notes:
+        Never restarts services or changes pairing state. Python WinRT probe
+        results take precedence over duplicate fields from PowerShell output.
     """
     evidence: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -203,7 +257,23 @@ def collect_evidence(
 
 
 def evidence_feature_vector(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Normalized features for rule/ML/LLM diagnosis providers."""
+    """Derive boolean and scalar features from a raw evidence document.
+
+    Used by ``classify_state``, invariant checks, and diagnosis providers to
+    avoid re-implementing nested evidence lookups.
+
+    Args:
+        evidence: Output of :func:`collect_evidence`.
+
+    Returns:
+        Flat feature dict (adapter, pairing, A2DP, endpoint, service health,
+        WinRT availability).
+
+    Notes:
+        Missing / ``None`` / unknown values are coerced with ``bool(...)``, so
+        unknown default-output becomes ``False``. Callers that must distinguish
+        unknown from false should read raw ``evidence["audio"]`` instead.
+    """
     device = evidence.get("device") or {}
     bluetooth = evidence.get("bluetooth") or {}
     audio = evidence.get("audio") or {}

@@ -60,6 +60,8 @@ FIXTURE_DISCOVERABLE_NOT_PAIRABLE = [
 
 
 class CandidateRankingTests(unittest.TestCase):
+    """Candidate ranker prefers exact targets and classic pairable endpoints."""
+
     def test_exact_name_pairable_candidate_wins(self):
         ranked = rank_candidates(
             [
@@ -149,6 +151,8 @@ class CandidateRankingTests(unittest.TestCase):
 
 
 class FailureTaxonomyTests(unittest.TestCase):
+    """Failure reasons and remediation plans stay consistent with evidence."""
+
     def test_pair_timeout_classified(self):
         self.assertEqual(
             map_pair_status("AuthenticationTimeout"),
@@ -222,6 +226,8 @@ class FailureTaxonomyTests(unittest.TestCase):
 
 
 class CleanupSafetyTests(unittest.TestCase):
+    """Cleanup must not remove unrelated headsets that share a brand prefix."""
+
     def test_cleanup_does_not_remove_unrelated_devices(self):
         """Address identity must reject sibling Edifier headsets."""
         from audio_path_checker.bluetooth_pairing.identity import pnp_node_matches_target
@@ -240,6 +246,8 @@ class CleanupSafetyTests(unittest.TestCase):
 
 
 class RankerCliTests(unittest.TestCase):
+    """Ranker CLI accepts JSON fixtures and returns structured rank results."""
+
     def test_ranker_cli_accepts_single_object_json(self):
         from audio_path_checker.bluetooth_pairing.__main__ import main
         import io

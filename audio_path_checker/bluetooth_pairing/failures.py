@@ -1,4 +1,10 @@
-"""Explicit Bluetooth auto-pair failure taxonomy."""
+"""Explicit Bluetooth auto-pair failure taxonomy.
+
+Maps WinRT pairing results and orchestrator evidence to stable ``FailureReason``
+codes. Distinguishes discovery failures, identity mismatches, pairability
+(not the same as "device visible"), pairing errors, and **audio path missing
+after successful pair** (Bluetooth connected ≠ audio working).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,12 @@ from enum import Enum
 
 
 class FailureReason(str, Enum):
+    """Stable failure classification codes for auto-pair and ranker CLI.
+
+    Values are string enums suitable for JSON logs and PowerShell orchestrator
+    stage correlation. Legacy alias members preserve backward-compatible names.
+    """
+
     INSUFFICIENT_PRIVILEGES = "INSUFFICIENT_PRIVILEGES"
     GHOST_CLEANUP_FAILED = "GHOST_CLEANUP_FAILED"
     ADAPTER_RESET_FAILED = "ADAPTER_RESET_FAILED"
@@ -64,6 +76,16 @@ _PAIR_STATUS_MAP: dict[str, FailureReason | None] = {
 
 
 def map_pair_status(status: str) -> FailureReason | None:
+    """Map a WinRT ``DevicePairingResultStatus`` string to ``FailureReason``.
+
+    Args:
+        status: Status text from PowerShell (case-insensitive).
+
+    Returns:
+        ``FailureReason`` for failures, ``None`` for ``Paired`` /
+        ``AlreadyPaired`` success paths, or ``UNKNOWN_FAILURE`` when
+        unrecognized.
+    """
     normalized = (status or "").strip()
     if not normalized:
         return FailureReason.UNKNOWN_FAILURE
@@ -84,7 +106,33 @@ def classify_outcome(
     identity_mismatch: bool = False,
     invariant_violations: list | None = None,
 ) -> FailureReason | None:
-    """Map evidence to failure classification; None means success path."""
+    """Map orchestrator evidence to a failure classification.
+
+    Precedence (first match wins): non-empty ``invariant_violations`` →
+    full success (``None``) → paired-but-silent → identity mismatch →
+    not discovered → enumeration failure → pairability tri-state → unknown.
+
+    Args:
+        pairability: Tri-state ``PAIRABLE`` / ``NOT_PAIRABLE`` / ``UNKNOWN``.
+        classic_enumeration_succeeded: Classic DeviceInformation enum OK.
+        aep_enumeration_succeeded: Association endpoint enum OK.
+        target_discovered: Identity-matched target seen in discovery.
+        pair_success: WinRT pair completed (or already paired).
+        audio_ready: Core Audio / A2DP path verified for **same identity**.
+        identity_mismatch: Wrong-address device confused with target.
+        invariant_violations: Non-empty list from ``check_recovery_invariants``.
+
+    Returns:
+        ``FailureReason`` on failure paths, or ``None`` when ``pair_success``
+        and ``audio_ready`` both hold (full success). Does **not** return
+        ``FailureReason.SUCCESS`` — that enum member is for status documents.
+
+    Notes:
+        ``PAIRING_SUCCEEDED_AUDIO_ENDPOINT_MISSING`` encodes "paired but silent"
+        — Bluetooth link without working playback endpoint.
+        ``DISCOVERABLE_NOT_PAIRABLE`` means the target was seen but ``CanPair``
+        was false; distinct from ``TARGET_NOT_DISCOVERED``.
+    """
     if invariant_violations:
         return FailureReason.INTERNAL_STATE_INVARIANT_FAILURE
     if pair_success and audio_ready:

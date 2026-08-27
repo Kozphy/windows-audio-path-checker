@@ -1,4 +1,8 @@
-"""Post-action verification: command success ≠ problem resolved."""
+"""Post-action verification: command success ≠ problem resolved.
+
+Re-classifies evidence after a remediation attempt and compares repair command
+outcome against actual path recovery (:class:`~..models.states.AudioPathState.AUDIO_PATH_HEALTHY`).
+"""
 
 from __future__ import annotations
 
@@ -14,6 +18,27 @@ def verify_recovery(
     repair_command_succeeded: bool,
     classification_after: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Verify whether remediation restored a healthy audio path.
+
+    Args:
+        evidence_after: Evidence collected after the repair action.
+        repair_command_succeeded: Whether the executor reported success.
+        classification_after: Optional pre-computed classification; when
+            omitted, :func:`~..diagnostics_engine.classifier.classify_state`
+            is invoked on ``evidence_after``.
+
+    Returns:
+        Verification dict with ``system_recovered``, ``verified_state``,
+        ``checklist``, and ``distinction`` separating ``action_succeeded``
+        from ``problem_resolved``.
+
+    Notes:
+        A repair command can succeed while the path remains broken (for
+        example, service restart OK but endpoint still missing). Checklist
+        fields are mostly booleans; ``default_output`` preserves the raw
+        tri-state (``True`` / ``False`` / ``None``). ``audio_services``
+        currently checks ``Audiosrv`` only, not ``AudioEndpointBuilder``.
+    """
     classification = classification_after or classify_state(evidence_after)
     state = str(classification.get("state") or "")
     recovered = state == AudioPathState.AUDIO_PATH_HEALTHY.value

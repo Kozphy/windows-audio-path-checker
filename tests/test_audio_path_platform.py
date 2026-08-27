@@ -67,6 +67,8 @@ def _evidence(**overrides):
 
 
 class ScenarioTests(unittest.TestCase):
+    """End-to-end audio-path scenarios: classify, hypothesize, and plan safely."""
+
     def test_a_connected_without_endpoint(self):
         evidence = _evidence(
             audio={

@@ -1,4 +1,40 @@
-"""End-to-end diagnose → plan → (optional) act → verify pipeline."""
+"""End-to-end audio-path diagnosis pipeline.
+
+Data flow (input → transform → output)
+--------------------------------------
+
+1. **Input** — ``device_name``, optional pre-built ``snapshot`` / ``evidence``,
+   ``mode`` (``diagnose`` | ``repair`` | ``aggressive-repair``), and flags
+   controlling artifact persistence and execution.
+
+2. **Evidence collection** — When ``evidence`` is absent,
+   :func:`~audio_path_checker.collectors.evidence.collect_evidence` gathers
+   Bluetooth pairing, A2DP/media-node, endpoint, service, and WinRT capability
+   signals for the target device. Pre-supplied evidence may be augmented with a
+   WinRT capability probe when missing.
+
+3. **Diagnosis** — A :class:`~audio_path_checker.providers.diagnosis.DiagnosisProvider`
+   maps evidence to a **classification** (audio-path state), **invariants**
+   (expected vs observed), and ranked **hypotheses** (likely root causes).
+
+4. **Remediation planning** — :func:`~audio_path_checker.remediation.planner.plan_remediation`
+   selects a **recommended** action (or observation-only) from the
+   classification, hypotheses, evidence, and mode. Mode caps which planned
+   actions are marked executable; it does not itself run them.
+
+5. **Optional reobserve experiment** — When ``execute=True`` *and* the
+   recommended action is specifically ``refresh_audio_endpoint_inventory``,
+   the pipeline waits briefly and re-collects evidence. It does **not** execute
+   service restarts, adapter enablement, or pairing repair from this path.
+
+6. **Verification** — :func:`~audio_path_checker.remediation.verification.verify_recovery`
+   compares before/after evidence and whether that reobserve experiment ran.
+
+7. **Output** — Human-readable ``report_text``, structured ``diagnosis`` /
+   ``plan`` / ``verification``, a machine-learning-oriented ``dataset_record``,
+   ``summary`` metadata, and optional on-disk session artifacts under
+   ``session_dir``.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +65,22 @@ def format_diagnostic_report(
     diagnosis: dict[str, Any],
     plan: dict[str, Any],
 ) -> str:
+    """Render a console-friendly diagnostic report for a single device.
+
+    Summarizes pass/fail checks across the Bluetooth and audio stack,
+    the top hypothesis, recommended remediation, capability gaps, and any
+    invariant violations.
+
+    Args:
+        device_name: Human-readable label for the headset or endpoint under test.
+        evidence: Collected evidence bundle (Bluetooth, audio, device, services).
+        diagnosis: Provider output containing ``classification``, ``hypotheses``,
+            and ``invariants``.
+        plan: Remediation plan containing an optional ``recommended`` action.
+
+    Returns:
+        Multi-line plain-text report suitable for CLI or log output.
+    """
     classification = diagnosis.get("classification") or {}
     hypotheses = diagnosis.get("hypotheses") or []
     top = hypotheses[0] if hypotheses else {}
@@ -104,11 +156,46 @@ def run_audio_path_diagnosis(
     write_artifacts: bool = True,
     execute: bool = False,
 ) -> dict[str, Any]:
-    """
-    Evidence → State → Invariants → Hypotheses → Plan → (optional) Action → Verify.
+    """Run the full evidence → diagnosis → plan → verify pipeline.
 
-    ``execute`` is reserved; destructive execution stays behind existing
-    bluetooth repair helpers and explicit CLI flags.
+    Orchestrates collection (or reuse) of device evidence, provider-based
+    classification, remediation planning, optional reobserve experiment,
+    recovery verification, report generation, and optional session artifacts.
+
+    Args:
+        device_name: Target Bluetooth headset or audio device name.
+        mode: Cap passed to the remediation planner (``diagnose`` / ``repair`` /
+            ``aggressive-repair``). Affects which planned actions are marked
+            executable; does not by itself run service/adapter/pairing repairs.
+        snapshot: Optional pre-collected GUI/CLI snapshot to seed evidence
+            collection.
+        evidence: Pre-built evidence dict; when provided, collection is skipped
+            except for a WinRT capability probe if ``capabilities`` is missing.
+        provider: Diagnosis backend; defaults to the configured provider chain.
+        artifacts_root: Parent directory for session folders; uses the default
+            artifacts location when ``None``.
+        write_artifacts: When true, persist evidence, diagnosis, actions, and
+            dataset records under a new session directory.
+        execute: When true, and only if the recommended action is
+            ``refresh_audio_endpoint_inventory``, wait briefly and re-collect
+            evidence. No PnP/service/pairing mutations are performed here.
+
+    Returns:
+        Result bundle with keys:
+
+        * ``session_dir`` — artifact folder path or ``None``
+        * ``evidence`` / ``evidence_after`` — before and after evidence
+        * ``diagnosis`` / ``plan`` — structured provider and planner output
+        * ``verification`` — recovery verdict from the verifier
+        * ``report_text`` — human-readable summary
+        * ``dataset_record`` — flat record for ML / analytics export
+        * ``summary`` — high-level metadata (classification, timing, mode)
+
+    Notes:
+        Destructive or elevated Bluetooth repairs live in
+        :mod:`audio_path_checker.bluetooth` / CLI flags (``--add-bluetooth``,
+        ``--repair-bluetooth``, ``--enable-bluetooth-adapter``), not in this
+        pipeline execute path.
     """
     started = time.perf_counter()
     session_dir = new_session_dir(artifacts_root) if write_artifacts else None
@@ -247,6 +334,16 @@ def run_audio_path_diagnosis(
 
 
 def _symptom(evidence: dict[str, Any]) -> str:
+    """Map collected evidence to a coarse symptom label for dataset export.
+
+    Args:
+        evidence: Evidence bundle with ``device``, ``audio``, and ``bluetooth``
+            sub-dicts.
+
+    Returns:
+        A stable symptom code such as ``bluetooth_connected_no_audio`` or
+        ``device_not_paired``, or the generic ``audio_path_diagnostic``.
+    """
     device = evidence.get("device") or {}
     audio = evidence.get("audio") or {}
     if device.get("connected") and not audio.get("endpoint_present"):

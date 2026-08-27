@@ -1,3 +1,27 @@
+"""Command-line entry surface for Windows Audio Path Checker.
+
+This module is the programmatic API boundary invoked by the
+``windows-audio-checker-cli`` console script. It exposes two user-facing
+surfaces:
+
+* **GUI mode** (default): launches the Tkinter application when no CLI flags
+  are present.
+* **CLI mode**: runs scans, diagnosis/repair pipelines, Bluetooth remediation,
+  timeline sampling, and history persistence without opening a window.
+
+Exit-code contract (by path):
+
+* Scan / report path: ``0`` if no *critical* findings; ``2`` if any critical
+  finding remains (warnings alone do not force ``2``).
+* ``--diagnose`` / ``--repair`` / ``--aggressive-repair``: ``0`` only when
+  classified state is ``AUDIO_PATH_HEALTHY``; otherwise ``2`` for *any*
+  non-healthy state (not only critical findings).
+* ``--add-bluetooth``: returns the auto-pair script exit code on failure
+  (often taxonomy codes such as 10/11), else ``0``.
+* Some Bluetooth helpers that cannot find a target print an error then fall
+  through to the scan exit-code path rather than a dedicated failure code.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -7,6 +31,9 @@ from pathlib import Path
 
 from . import __version__
 from .bluetooth import (
+    DEFAULT_ADD_BLUETOOTH_ADDRESS,
+    DEFAULT_ADD_BLUETOOTH_NAME,
+    add_bluetooth_device,
     disabled_bluetooth_adapters,
     enable_bluetooth_adapter,
     preferred_bluetooth_adapter,
@@ -27,6 +54,13 @@ from .timeline import record_timeline, state_fingerprint
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for all CLI flags and sub-modes.
+
+    Returns:
+        A fully configured ``ArgumentParser`` whose flags control scan-only
+        output, the evidence-driven diagnosis pipeline, Bluetooth repair
+        actions, timeline recording, SQLite history, and report export.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Evidence-driven Windows audio / Bluetooth path diagnostics. "
@@ -121,6 +155,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--add-bluetooth",
+        nargs="?",
+        const=DEFAULT_ADD_BLUETOOTH_NAME,
+        metavar="NAME",
+        help=(
+            "Launch identity-safe elevated auto-pair for a Bluetooth headset. "
+            f"Optional NAME (default: {DEFAULT_ADD_BLUETOOTH_NAME}). "
+            "Put the headset in pairing mode first. Implies --no-gui."
+        ),
+    )
+    parser.add_argument(
+        "--bluetooth-address",
+        default=DEFAULT_ADD_BLUETOOTH_ADDRESS,
+        metavar="MAC",
+        help=(
+            "Bluetooth MAC for --add-bluetooth "
+            f"(default: {DEFAULT_ADD_BLUETOOTH_ADDRESS})."
+        ),
+    )
+    parser.add_argument(
         "--open-bluetooth-settings",
         action="store_true",
         help="Open Windows Bluetooth settings (implies --no-gui).",
@@ -163,6 +217,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _select_bluetooth_target(snapshot: dict, name: str | None) -> dict | None:
+    """Resolve the Bluetooth headset targeted by ``--repair-bluetooth``.
+
+    Args:
+        snapshot: Latest diagnostic snapshot containing paired headsets.
+        name: User-supplied name or MAC, ``"__auto__"`` / ``None`` for preferred
+            default-playback matching.
+
+    Returns:
+        Dict with ``name`` and ``address`` when a match is found, else ``None``.
+
+    Notes:
+        Explicit ``name`` matching is **substring** on friendly name (first
+        address-bearing hit wins) or exact casefolded MAC equality — ambiguous
+        for similarly named sibling headsets. Auto mode uses
+        :func:`~audio_path_checker.bluetooth.preferred_bluetooth_repair_target`
+        (endpoint match first, then first paired headset with an address).
+    """
     if name and name != "__auto__":
         needle = name.casefold()
         bluetooth = snapshot.get("bluetooth") or {}
@@ -177,6 +248,15 @@ def _select_bluetooth_target(snapshot: dict, name: str | None) -> dict | None:
 
 
 def _pipeline_mode(args: argparse.Namespace) -> str | None:
+    """Map mutually exclusive repair flags to a pipeline mode name.
+
+    Args:
+        args: Parsed CLI namespace.
+
+    Returns:
+        One of ``"aggressive-repair"``, ``"repair"``, ``"diagnose"``, or
+        ``None`` when no diagnosis pipeline flag was requested.
+    """
     if args.aggressive_repair:
         return "aggressive-repair"
     if args.repair:
@@ -187,10 +267,21 @@ def _pipeline_mode(args: argparse.Namespace) -> str | None:
 
 
 def _scan() -> dict:
+    """Collect live system evidence and attach ranked root-cause inference.
+
+    Returns:
+        An enriched diagnostic snapshot ready for printing, storage, or
+        downstream Bluetooth target selection.
+    """
     return enrich_snapshot(collect_snapshot())
 
-
 def _print_root_causes(snapshot: dict) -> None:
+    """Print a human-readable ranked root-cause summary to stdout.
+
+    Args:
+        snapshot: Enriched snapshot whose ``inference.root_causes`` list
+            drives the output.
+    """
     causes = ((snapshot.get("inference") or {}).get("root_causes") or [])
     print("\nRanked root causes")
     print("------------------")
@@ -209,6 +300,12 @@ def _print_root_causes(snapshot: dict) -> None:
 
 
 def _print_timeline_summary(timeline: dict) -> None:
+    """Print reliability metrics and state transitions from a timeline run.
+
+    Args:
+        timeline: Result dict from :func:`record_timeline` containing
+            ``metrics`` and ``transitions`` keys.
+    """
     metrics = timeline.get("metrics") or {}
     print("\nTimeline reliability summary")
     print("----------------------------")
@@ -223,6 +320,23 @@ def _print_timeline_summary(timeline: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the checker in GUI or CLI mode and return a process exit code.
+
+    Flow:
+        1. Parse and validate CLI arguments.
+        2. Launch the GUI when no CLI-oriented flags are present.
+        3. Otherwise run the requested path: diagnosis pipeline, Bluetooth
+           remediation, browser unmute, timeline sampling, SQLite persistence,
+           and/or JSON report emission.
+
+    Args:
+        argv: Optional argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        Path-dependent exit code — see module docstring. Diagnose modes treat
+        any non-healthy classification as ``2``; scan mode keys off critical
+        findings only.
+    """
     args = build_parser().parse_args(argv)
     if args.interval <= 0:
         raise SystemExit("--interval must be greater than zero")
@@ -242,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.unmute_browsers
         or args.enable_bluetooth_adapter
         or args.repair_bluetooth is not None
+        or args.add_bluetooth is not None
         or args.open_bluetooth_settings
         or args.json
     )
@@ -283,6 +398,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.open_bluetooth_settings:
         open_windows_settings("ms-settings:bluetooth")
+
+    if args.add_bluetooth is not None:
+        target_name = args.add_bluetooth or DEFAULT_ADD_BLUETOOTH_NAME
+        print(
+            "Put the headset in pairing mode (LED flashing) now.\n"
+            f"Adding Bluetooth device {target_name} "
+            f"({args.bluetooth_address})… Approve UAC."
+        )
+        result = add_bluetooth_device(
+            name=target_name,
+            address=args.bluetooth_address,
+            elevate=True,
+            wait=True,
+        )
+        if result.get("log"):
+            print(result["log"])
+        print(
+            f"Result: {result.get('overall_result') or ('SUCCESS' if result.get('success') else 'FAILED')}"
+        )
+        if result.get("classification"):
+            print(f"Classification: {result['classification']}")
+        print(f"Exit code: {result.get('exit_code')}")
+        print(f"Status JSON: {result.get('status_path')}")
+        if not result.get("success"):
+            return int(result.get("exit_code") or 1)
+        return 0
 
     if args.unmute_browsers:
         changed = unmute_silent_browser_sessions()

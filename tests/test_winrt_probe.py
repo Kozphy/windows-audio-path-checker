@@ -13,6 +13,8 @@ from audio_path_checker.platform.winrt import (
 
 
 class ExtractJsonTests(unittest.TestCase):
+    """JSON extraction tolerates pure JSON and mixed console output."""
+
     def test_pure_json(self):
         raw = '{"available": true}'
         self.assertEqual(_extract_json_object(raw), raw)
@@ -33,6 +35,8 @@ class ExtractJsonTests(unittest.TestCase):
 
 
 class ProbeParsingTests(unittest.TestCase):
+    """WinRT capability probe maps subprocess stdout into availability flags."""
+
     def test_maps_bluetooth_discovery_available_field(self):
         payload = {
             "available": True,

@@ -1,5 +1,6 @@
-import unittest
+"""Tests for Bluetooth headset matching and adapter health detection."""
 
+import unittest
 from audio_path_checker.bluetooth import (
     disabled_bluetooth_adapters,
     match_headset_for_endpoint,
@@ -8,6 +9,8 @@ from audio_path_checker.bluetooth import (
 
 
 class BluetoothMatchTests(unittest.TestCase):
+    """Endpoint-to-headset correlation and disabled-adapter discovery."""
+
     def test_match_edifier_endpoint(self):
         bluetooth = {
             "paired_headsets": [

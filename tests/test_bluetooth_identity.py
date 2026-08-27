@@ -71,6 +71,8 @@ FIXTURE_WH700_WRONG_DEVICE = [
 
 
 class NormalizeAddressTests(unittest.TestCase):
+    """Bluetooth MAC normalization accepts separator variants."""
+
     def test_address_variants_normalize(self):
         variants = [
             "c8247887e57c",
@@ -83,6 +85,8 @@ class NormalizeAddressTests(unittest.TestCase):
 
 
 class IdentityMatchTests(unittest.TestCase):
+    """Target identity matching prevents false-positive pairing success."""
+
     def test_a_exact_target_pairable(self):
         m = match_bluetooth_identity(
             build_target_identity(requested_name=TARGET, bluetooth_address=ADDR),
@@ -258,6 +262,8 @@ class IdentityMatchTests(unittest.TestCase):
 
 
 class BrandSubstringNotAuthoritativeTests(unittest.TestCase):
+    """Brand substring alone must not match when a MAC address is configured."""
+
     def test_edifier_substring_insufficient_when_address_known(self):
         m = match_bluetooth_identity(
             build_target_identity(requested_name=TARGET, bluetooth_address=ADDR),

@@ -1,3 +1,11 @@
+"""Semantic timeline sampling and diffing for audio-path state.
+
+Repeatedly scans playback state, fingerprints compact representations, and
+records only meaningful transitions (endpoint changes, finding open/resolve,
+browser session shifts). Designed for local SRE-style observability during
+intermittent silent-headphone incidents.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +16,7 @@ from typing import Any, Callable
 
 
 def _finding_codes(snapshot: dict[str, Any]) -> set[str]:
+    """Extract stable finding codes from a snapshot."""
     return {
         str(item.get("code"))
         for item in snapshot.get("findings") or []
@@ -16,7 +25,19 @@ def _finding_codes(snapshot: dict[str, Any]) -> set[str]:
 
 
 def compact_state(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Extract stable, decision-useful state from a potentially noisy snapshot."""
+    """Extract stable, decision-useful state from a potentially noisy snapshot.
+
+    Collapses verbose collector output into endpoint names, master volume/mute,
+    browser session summaries, finding codes, and Bluetooth endpoint presence—
+    fields that drive user-visible diagnosis without serializing full COM graphs.
+
+    Args:
+        snapshot: Full scan dict from
+            :func:`audio_path_checker.diagnostics.collect_snapshot`.
+
+    Returns:
+        Compact dict suitable for diffing and fingerprinting.
+    """
     core = snapshot.get("core_audio") or {}
     endpoint = core.get("default_endpoint") or {}
     portaudio = snapshot.get("portaudio") or {}
@@ -49,12 +70,32 @@ def compact_state(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def state_fingerprint(snapshot: dict[str, Any]) -> str:
+    """Compute a SHA-256 hash of the compact state for deduplication.
+
+    Args:
+        snapshot: Full scan dict.
+
+    Returns:
+        Hex digest identifying the semantic state at scan time.
+    """
     payload = json.dumps(compact_state(snapshot), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def diff_states(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return semantic transitions between two snapshots."""
+    """Return semantic transitions between two snapshots.
+
+    Emits ``state-change`` events for scalar fields, ``finding-opened`` /
+    ``finding-resolved`` for finding-code churn, and ``browser-session-change``
+    when browser routing or volume state differs.
+
+    Args:
+        previous: Earlier full snapshot.
+        current: Later full snapshot.
+
+    Returns:
+        List of transition event dicts (without ``observed_at``; callers add it).
+    """
     before = compact_state(previous)
     after = compact_state(current)
     transitions: list[dict[str, Any]] = []
@@ -96,7 +137,24 @@ def record_timeline(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """Sample audio state and retain only meaningful transitions plus snapshots."""
+    """Sample audio state and retain only meaningful transitions plus snapshots.
+
+    Args:
+        scanner: Zero-argument callable returning a full snapshot dict (typically
+            :func:`audio_path_checker.diagnostics.collect_snapshot`).
+        duration_seconds: Total wall-clock sampling window; must be positive.
+        interval_seconds: Delay between samples; must be positive.
+        sleep: Injectable sleep function for tests.
+        clock: Injectable monotonic clock for tests.
+
+    Returns:
+        Timeline bundle with ``samples``, ``transitions``, schema metadata, and
+        SRE-style ``metrics`` from :func:`timeline_metrics`.
+
+    Raises:
+        ValueError: If ``duration_seconds`` or ``interval_seconds`` is not
+            positive.
+    """
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be > 0")
     if interval_seconds <= 0:
@@ -141,7 +199,24 @@ def record_timeline(
 
 
 def timeline_metrics(samples: list[dict[str, Any]], transitions: list[dict[str, Any]]) -> dict[str, Any]:
-    """Produce small SRE-style metrics that remain meaningful for local diagnosis."""
+    """Produce small SRE-style metrics that remain meaningful for local diagnosis.
+
+    Args:
+        samples: Timeline sample records each containing ``fingerprint`` and
+            embedded ``snapshot``.
+        transitions: Semantic events recorded between consecutive samples
+            (state changes, finding churn, browser-session events, etc.).
+
+    Returns:
+        Dict with ``sample_count``, ``unique_states``, ``transition_count``
+        (when samples are non-empty), ``state_change_rate``, and
+        ``critical_sample_ratio``.
+
+    Notes:
+        ``state_change_rate`` is ``len(transitions) / max(len(samples) - 1, 1)``
+        across **all** transition types, not only ``type == "state-change"``.
+        Empty-sample returns omit ``transition_count``.
+    """
     if not samples:
         return {"sample_count": 0, "unique_states": 0, "state_change_rate": 0.0, "critical_sample_ratio": 0.0}
 

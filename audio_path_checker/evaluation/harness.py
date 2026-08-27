@@ -1,4 +1,9 @@
-"""Evaluation harness scaffold — no fabricated metrics."""
+"""Evaluation harness scaffold — no fabricated metrics.
+
+Defines metric names, strategy labels, and per-case scoring helpers for
+comparing diagnosis/remediation approaches. Aggregate benchmark tables remain
+empty until real measured runs populate them.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +30,13 @@ STRATEGIES = (
 
 
 def empty_metrics_table() -> dict[str, dict[str, None]]:
-    """Skeleton for later real measurements."""
+    """Return a skeleton metrics table for all strategies.
+
+    Returns:
+        Nested dict ``strategy → metric_name → None`` for each entry in
+        :data:`STRATEGIES` and :data:`METRIC_NAMES`. Values are intentionally
+        unset until real benchmark runs exist.
+    """
     return {strategy: {metric: None for metric in METRIC_NAMES} for strategy in STRATEGIES}
 
 
@@ -38,10 +49,23 @@ def evaluate_case(
     forbidden_actions: list[str] | None = None,
     planned_action: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Score a single synthetic/real case.
+    """Score a single synthetic or real diagnostic case.
 
-    Returns structural results only — does not invent benchmark aggregates.
+    Args:
+        evidence: Input evidence document passed to ``diagnose_fn``.
+        diagnose_fn: Callable matching diagnosis provider ``diagnose`` signature.
+        expected_state: Expected ``AudioPathState`` value, or ``None`` to skip.
+        expected_cause: Expected top hypothesis cause, or ``None`` to skip.
+        forbidden_actions: Action names that must not be planned (unsafe check).
+        planned_action: Remediation action under test for unsafe detection.
+
+    Returns:
+        Per-case result with ``state_match``, ``cause_match``, ``unsafe_action``,
+        predicted labels, and ``metrics_note`` (no invented aggregates).
+
+    Notes:
+        Does not compute roll-up benchmark statistics; callers aggregate
+        multiple case results externally.
     """
     diagnosis = diagnose_fn(evidence)
     classification = diagnosis.get("classification") or {}

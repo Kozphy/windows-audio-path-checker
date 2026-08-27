@@ -1,4 +1,9 @@
-"""Rule-based root-cause hypotheses from evidence + state."""
+"""Rule-based root-cause hypothesis ranking.
+
+Produces a deterministic, confidence-sorted list of likely causes given
+classified state and evidence. LLM/ML providers may replace or augment this
+logic later while preserving the same output shape.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,23 @@ def rank_hypotheses(
     evidence: dict[str, Any],
     classification: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Return ranked hypotheses (deterministic). LLM/ML can replace later."""
+    """Rank root-cause hypotheses from evidence and classification.
+
+    Args:
+        evidence: Normalized evidence document.
+        classification: Output of :func:`~.classifier.classify_state`.
+
+    Returns:
+        Hypotheses sorted by descending ``confidence``. Each entry has keys
+        ``cause``, ``confidence``, and ``evidence`` (supporting tag list).
+        When no rule matches, a single ``unknown`` hypothesis is returned.
+
+    Notes:
+        WinRT discovery failure is always considered when capability probe
+        reports unavailable. State-specific rules map one diagnosis label to
+        one or more competing causes (for example, paired-but-not-connected
+        may be stale PnP vs driver corruption).
+    """
     state = str(classification.get("state") or AudioPathState.UNKNOWN.value)
     f = evidence_feature_vector(evidence)
     caps = evidence.get("capabilities") or {}

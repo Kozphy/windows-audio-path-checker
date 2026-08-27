@@ -1,3 +1,10 @@
+"""SQLite persistence for scan snapshots and timeline transitions.
+
+Stores enriched diagnostic snapshots and semantic state transitions so local
+runs can be queried for trends (top root causes, critical-scan ratio) without
+re-parsing raw JSON files on every read.
+"""
+
 from __future__ import annotations
 
 import json
@@ -34,6 +41,15 @@ CREATE INDEX IF NOT EXISTS idx_transitions_type ON transitions(event_type);
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
+    """Open (or create) a WAL-mode database with the scans/transitions schema.
+
+    Args:
+        path: Filesystem location for the SQLite database file. Parent
+            directories are created when missing.
+
+    Returns:
+        An open connection with schema applied and foreign keys enabled.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(target)
@@ -44,6 +60,18 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def store_snapshot(connection: sqlite3.Connection, snapshot: dict[str, Any], *, fingerprint: str | None = None) -> int:
+    """Persist one scan snapshot and index its top root cause.
+
+    Args:
+        connection: Active database connection from :func:`connect`.
+        snapshot: Enriched scan dict (typically includes ``inference`` and
+            ``findings``). Full JSON is stored in ``snapshot_json``.
+        fingerprint: Optional stable state hash from
+            :func:`audio_path_checker.timeline.state_fingerprint`.
+
+    Returns:
+        The auto-generated row id of the inserted scan.
+    """
     inference = snapshot.get("inference") or {}
     top = inference.get("top_root_cause") or {}
     findings = snapshot.get("findings") or []
@@ -67,6 +95,16 @@ def store_snapshot(connection: sqlite3.Connection, snapshot: dict[str, Any], *, 
 
 
 def store_timeline(connection: sqlite3.Connection, timeline: dict[str, Any]) -> tuple[int, int]:
+    """Bulk-insert all samples and transitions from a recorded timeline.
+
+    Args:
+        connection: Active database connection.
+        timeline: Output of :func:`audio_path_checker.timeline.record_timeline`
+            containing ``samples`` and ``transitions`` lists.
+
+    Returns:
+        Tuple of ``(scan_count, transition_count)`` rows inserted.
+    """
     scan_count = 0
     transition_count = 0
     for sample in timeline.get("samples") or []:
@@ -98,6 +136,15 @@ def store_timeline(connection: sqlite3.Connection, timeline: dict[str, Any]) -> 
 
 
 def summary(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Aggregate scan and transition statistics for dashboard or CLI display.
+
+    Args:
+        connection: Active database connection with prior stored data.
+
+    Returns:
+        Dict with total scan/transition counts, critical-scan ratio, and the
+        five most frequent ``top_root_cause`` codes.
+    """
     scans, critical = connection.execute(
         "SELECT COUNT(*), COALESCE(SUM(has_critical), 0) FROM scans"
     ).fetchone()

@@ -17,6 +17,8 @@ def _read(path: Path) -> str:
 
 
 class AutoPairControlFlowTests(unittest.TestCase):
+    """Static checks on auto-pair script ordering, modules, and safety gates."""
+
     def test_script_is_ascii_safe_for_windows_powershell_51(self):
         raw = AUTO_PAIR.read_bytes()
         self.assertNotIn(b"\xe2\x80\x94", raw, "em-dash must not appear")
@@ -112,6 +114,8 @@ class AutoPairControlFlowTests(unittest.TestCase):
 
 
 class StageAggregationTests(unittest.TestCase):
+    """Final summary must not downgrade completed stages to NOT_RUN."""
+
     def test_pass_stage_not_overwritten_by_not_run_logic(self):
         """Stages set to PASS/ERROR/FAIL must not revert to NOT_RUN in summary."""
         summary = _read(BT_DIR / "WapcBluetoothCore.psm1")
@@ -120,6 +124,8 @@ class StageAggregationTests(unittest.TestCase):
 
 
 class ConnectedWithoutEndpointTests(unittest.TestCase):
+    """Bluetooth connected without a media endpoint is not a healthy path."""
+
     def test_connected_without_endpoint_not_healthy(self):
         from audio_path_checker.diagnostics_engine import classify_state
         from audio_path_checker.models.states import AudioPathState

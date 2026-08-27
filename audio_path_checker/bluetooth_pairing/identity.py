@@ -38,7 +38,18 @@ ACTION_SKIP = "SKIP"
 
 
 def normalize_bluetooth_address(value: str | None) -> str:
-    """Normalize MAC variants to lowercase hex without separators (12 chars preferred)."""
+    """Normalize MAC variants to lowercase hex without separators.
+
+    Args:
+        value: Bluetooth address or embedded hex substring; empty returns ``""``.
+
+    Returns:
+        Up to 12 lowercase hex digits (trailing 12 kept if longer).
+
+    Notes:
+        Non-hex characters are stripped; unlike ``bluetooth.normalize_bluetooth_address``,
+        invalid input yields empty string rather than raising — callers validate.
+    """
     if not value:
         return ""
     hex_only = re.sub(r"[^0-9a-f]", "", str(value).casefold())
@@ -48,11 +59,29 @@ def normalize_bluetooth_address(value: str | None) -> str:
 
 
 def normalize_device_name(value: str | None) -> str:
+    """Normalize a friendly name for exact comparison (casefold, collapse space).
+
+    Args:
+        value: Raw device or endpoint friendly name.
+
+    Returns:
+        Casefolded, whitespace-normalized string; empty when input is blank.
+
+    Notes:
+        Brand substring or partial matches are intentionally **not** supported.
+    """
     return re.sub(r"\s+", " ", (value or "").strip()).casefold()
 
 
 def extract_address_from_instance_id(instance_id: str | None) -> str:
-    """Pull a Bluetooth MAC from common Windows PnP / WinRT id forms."""
+    """Pull a Bluetooth MAC from common Windows PnP / WinRT id forms.
+
+    Args:
+        instance_id: PnP ``InstanceId`` or WinRT device id string.
+
+    Returns:
+        Normalized 12-char hex address, or ``""`` if no MAC pattern matches.
+    """
     text = instance_id or ""
     m = re.search(r"(?:DEV_|BluetoothDevice_|_)([0-9A-Fa-f]{12})(?:_|$|\\)", text)
     if m:
@@ -72,6 +101,23 @@ def build_target_identity(
     container_ids: list[str] | None = None,
     audio_endpoint_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Build the canonical ``TargetIdentity`` record for recovery.
+
+    Args:
+        requested_name: User-configured friendly name.
+        bluetooth_address: Target MAC when known (primary identity key).
+        pnp_instance_ids: Optional observed PnP ids for correlation.
+        association_endpoint_ids: Optional WinRT AEP ids.
+        container_ids: Optional device container GUIDs.
+        audio_endpoint_ids: Optional Core Audio endpoint ids.
+
+    Returns:
+        Dict with normalized name/address fields and id lists.
+
+    Notes:
+        When ``bluetooth_address`` is set, all verification stages must match
+        that address — sibling headsets with similar names are non-targets.
+    """
     addr = normalize_bluetooth_address(bluetooth_address)
     return {
         "requested_name": requested_name or "",
@@ -86,6 +132,7 @@ def build_target_identity(
 
 
 def _observed_address(observed: dict[str, Any]) -> str:
+    """Extract normalized Bluetooth address from an observed device dict."""
     addr = normalize_bluetooth_address(
         observed.get("device_address")
         or observed.get("address")
@@ -107,7 +154,28 @@ def match_bluetooth_identity(
     expected_name: str | None = None,
     expected_address: str | None = None,
 ) -> dict[str, Any]:
-    """Structured identity comparison. Address dominates when known."""
+    """Compare observed discovery/PnP evidence against expected target identity.
+
+    Address dominates when configured: a name match without address proof is
+    rejected if the expected MAC is known but missing on the candidate.
+
+    Args:
+        expected: ``TargetIdentity`` dict or legacy string name.
+        observed: Candidate or PnP node dict (``name``, ``device_address``,
+            ``id``, ``instance_id``, etc.).
+        expected_name: Override name when ``expected`` is a string.
+        expected_address: Override address when ``expected`` is a string.
+
+    Returns:
+        Structured result with ``matched``, ``confidence``, ``reason``,
+        ``address_match``, ``name_match``, and optional ``name_mismatch_warning``
+        when address matches but friendly names differ.
+
+    Notes:
+        Prevents false-positive SUCCESS from sibling headsets (e.g. WH700NB
+        endpoints proving W800BT Pro "recovered"). Name-only matching uses
+        exact normalized equality — never brand substring.
+    """
     if isinstance(expected, str):
         expected = build_target_identity(
             requested_name=expected_name or expected,
@@ -222,6 +290,17 @@ def annotate_candidate_identity(
     target_name: str,
     target_address: str | None,
 ) -> dict[str, Any]:
+    """Annotate one candidate with identity match fields and disposition.
+
+    Args:
+        candidate: Raw discovery candidate dict.
+        target_name: Configured target name.
+        target_address: Configured Bluetooth MAC when known.
+
+    Returns:
+        Copy of ``candidate`` with ``identity_match``, ``identity_matched``,
+        ``disposition``, ``rejection_reason``, and related action fields set.
+    """
     item = dict(candidate)
     identity = match_bluetooth_identity(
         build_target_identity(
@@ -252,7 +331,24 @@ def filter_candidates_by_identity(
     target_name: str,
     target_address: str | None,
 ) -> dict[str, Any]:
-    """DISCOVER → IDENTITY FILTER. Wrong-address devices never enter selection."""
+    """Filter discovery candidates before ranking or pair selection.
+
+    Pipeline stage: DISCOVER → **IDENTITY FILTER**. Wrong-address devices
+    receive ``REJECTED_WRONG_DEVICE`` and never enter selection.
+
+    Args:
+        candidates: Raw WinRT candidates from discovery.
+        target_name: Configured target friendly name.
+        target_address: Configured Bluetooth MAC (authoritative when non-empty).
+
+    Returns:
+        Dict with ``all``, ``accepted``, ``rejected``,
+        ``exact_target_discovered``, and ``any_bluetooth_device_discovered``.
+
+    Notes:
+        ``any_bluetooth_device_discovered`` can be True while
+        ``exact_target_discovered`` is False (sibling device visible).
+    """
     annotated: list[dict[str, Any]] = []
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -281,7 +377,21 @@ def pnp_node_matches_target(
     target_name: str,
     target_address: str | None,
 ) -> dict[str, Any]:
-    """Correlate a PnP/MEDIA/AudioEndpoint node to TargetIdentity."""
+    """Correlate a PnP/MEDIA/AudioEndpoint node to ``TargetIdentity``.
+
+    Args:
+        friendly_name: PnP ``FriendlyName`` or endpoint label.
+        instance_id: PnP ``InstanceId`` (MAC may be embedded).
+        target_name: Configured recovery target name.
+        target_address: Configured Bluetooth MAC when known.
+
+    Returns:
+        Same structured dict as ``match_bluetooth_identity``.
+
+    Notes:
+        Audio endpoint presence without identity match must not count as
+        recovery success — connected Bluetooth ≠ working audio path.
+    """
     observed = {
         "name": friendly_name,
         "instance_id": instance_id,
@@ -296,7 +406,23 @@ def pnp_node_matches_target(
 
 
 def repair_stage_results(stages: dict[str, str]) -> list[str]:
-    """Normalize impossible stage combinations (mirrors Repair-WapcStageResults)."""
+    """Normalize impossible stage combinations (mirrors Repair-WapcStageResults).
+
+    Args:
+        stages: Mutable map of stage name → status (``PASS``, ``FAIL``,
+            ``NOT_RUN``, etc.).
+
+    Returns:
+        List of human-readable repair actions applied (e.g.
+        ``PairResult->NOT_RUN(pair_request_not_executed)``).
+
+    Notes:
+        Mutates ``stages`` in place. Decision inputs may read lowercase /
+        JSON aliases (``configured_target_found``, ``pair_request``), but
+        writes target PascalCase orchestrator keys
+        (``TargetClassicEndpoint``, ``PairResult``, …). Prevents reporting
+        pair/audio success when configured-target discovery failed.
+    """
     repaired: list[str] = []
     target_found = stages.get("TargetDiscovered") or stages.get("configured_target_found")
     pair_request = stages.get("PairRequest") or stages.get("pair_request") or "NOT_RUN"
@@ -324,7 +450,21 @@ def repair_stage_results(stages: dict[str, str]) -> list[str]:
 
 
 def check_recovery_invariants(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return invariant violations; empty list means state is consistent."""
+    """Return invariant violations; empty list means state is consistent.
+
+    Args:
+        state: Orchestrator recovery snapshot (pair stages, identity flags,
+            ``final_success``, endpoint discovery flags).
+
+    Returns:
+        List of violation dicts with ``invariant``, ``code``, and ``detail``.
+        Empty when no logical contradictions are detected.
+
+    Notes:
+        Key invariants: ``final_success`` requires exact target discovery;
+        audio/A2DP endpoint flags require matching identity proof; pair result
+        cannot pass without pair request (unless already paired).
+    """
     violations: list[dict[str, Any]] = []
 
     pair_request = str(state.get("pair_request") or "NOT_RUN").upper()
@@ -422,7 +562,14 @@ def check_recovery_invariants(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def test_recovery_state(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Alias for check_recovery_invariants (Test-WapcRecoveryState mirror)."""
+    """Alias for ``check_recovery_invariants`` (Test-WapcRecoveryState mirror).
+
+    Args:
+        state: Orchestrator recovery snapshot.
+
+    Returns:
+        Same violation list as ``check_recovery_invariants``.
+    """
     return check_recovery_invariants(state)
 
 
@@ -472,6 +619,15 @@ CLASSIFICATION_EXIT_CODES: dict[str, int] = {
 
 
 def exit_code_for_classification(classification: str | None) -> int:
+    """Map a failure classification string to a process exit code.
+
+    Args:
+        classification: ``FailureReason`` value or orchestrator classification
+            label; ``None`` or unknown values map to ``1``.
+
+    Returns:
+        Integer exit code (``0`` for ``SUCCESS``; see ``CLASSIFICATION_EXIT_CODES``).
+    """
     if not classification:
         return 1
     return CLASSIFICATION_EXIT_CODES.get(classification, 1)

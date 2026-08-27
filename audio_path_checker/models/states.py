@@ -1,4 +1,14 @@
-"""Explicit Bluetooth → Windows audio path states."""
+"""Explicit Bluetooth → Windows audio path states.
+
+Each :class:`AudioPathState` is the primary decision label consumed by
+classifiers, remediation planners, and CLI exit handling.
+
+:data:`PATH_TRANSITIONS` is **documentation / evaluation metadata** for the
+ideal physical→playback chain. It is not walked at runtime by
+:func:`~audio_path_checker.diagnostics_engine.classifier.classify_state`, and it
+includes later stages (application session, actual output) that the classifier
+does not currently emit as states.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +16,12 @@ from enum import Enum
 
 
 class AudioPathState(str, Enum):
+    """Discrete states along the Bluetooth headset audio path.
+
+    Values progress from hardware/radio problems toward healthy playback.
+    Classification assigns exactly one state per evidence snapshot.
+    """
+
     UNKNOWN = "UNKNOWN"
     RADIO_UNAVAILABLE = "RADIO_UNAVAILABLE"
     DEVICE_NOT_PAIRED = "DEVICE_NOT_PAIRED"
@@ -20,7 +36,7 @@ class AudioPathState(str, Enum):
     WINRT_DISCOVERY_UNAVAILABLE = "WINRT_DISCOVERY_UNAVAILABLE"
 
 
-# Transitions along the physical→playback path (for docs / evaluation).
+# Ordered ``(from_stage, to_stage)`` pairs from physical device to actual output.
 PATH_TRANSITIONS: tuple[tuple[str, str], ...] = (
     ("physical_device", "bluetooth_radio"),
     ("bluetooth_radio", "paired"),

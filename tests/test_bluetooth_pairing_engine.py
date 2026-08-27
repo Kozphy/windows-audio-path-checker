@@ -22,6 +22,8 @@ ADDR = "c8247887e57c"
 
 
 class PairabilityTriStateTests(unittest.TestCase):
+    """Pairability distinguishes unknown enumeration failure from not pairable."""
+
     def test_enumeration_error_yields_unknown_not_not_pairable(self):
         candidates = [
             {
@@ -92,6 +94,8 @@ class PairabilityTriStateTests(unittest.TestCase):
 
 
 class RankerInputTests(unittest.TestCase):
+    """Ranker CLI validates JSON input and exposes scoring metadata."""
+
     def test_ranker_cli_rejects_invalid_json(self):
         from audio_path_checker.bluetooth_pairing.__main__ import main
         import io

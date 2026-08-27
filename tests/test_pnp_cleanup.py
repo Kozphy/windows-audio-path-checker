@@ -71,6 +71,8 @@ OTHER_ADDR = "cc14bc0bde24"
 
 
 class PnpInstanceIdExtractionTests(unittest.TestCase):
+    """PnP InstanceId extraction and pnputil invocation safety gates."""
+
     def test_a_correct_target_id(self):
         device = {
             "FriendlyName": TARGET,
@@ -216,6 +218,8 @@ class PnpInstanceIdExtractionTests(unittest.TestCase):
 
 
 class CleanupGateTests(unittest.TestCase):
+    """Adapter reset proceeds only after verified PnP cleanup."""
+
     def test_cleanup_fail_blocks_adapter_reset(self):
         cleanup_verified = False
         next_state = "RESETTING_ADAPTER" if cleanup_verified else "CLEANUP_FAILED"

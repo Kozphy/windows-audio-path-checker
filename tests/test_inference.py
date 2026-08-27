@@ -1,11 +1,14 @@
+"""Tests for root-cause inference layered on diagnostic findings."""
+
 from __future__ import annotations
 
 import unittest
-
 from audio_path_checker.inference import enrich_snapshot, infer_root_causes
 
 
 class InferenceTests(unittest.TestCase):
+    """Ranked root causes reflect finding severity without inventing new ones."""
+
     def test_browser_mute_is_ranked_high(self) -> None:
         snapshot = {
             "findings": [

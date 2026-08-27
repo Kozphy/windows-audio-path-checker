@@ -1,4 +1,14 @@
-"""Path invariants checked against evidence."""
+"""Path invariants checked against collected evidence.
+
+Invariants encode consistency rules that must hold when the audio path is
+healthy (for example, a connected device should expose A2DP or a media node).
+They complement :func:`~.classifier.classify_state` by surfacing cross-signal
+contradictions—cases where individual features look plausible but the combined
+evidence violates expected Windows Bluetooth→audio stack relationships.
+
+Violations feed evaluation metrics, UI warnings, and future ML/LLM providers
+without changing the primary state label.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +18,24 @@ from ..collectors.evidence import evidence_feature_vector
 
 
 def check_invariants(evidence: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return explicit invariant violations (and satisfied checks)."""
+    """Evaluate path invariants against evidence features.
+
+    Each invariant is conditional: it is only checked when its ``only_if``
+    predicate is true (for example, endpoint rules apply only when an endpoint
+    node was reported).
+
+    Args:
+        evidence: Normalized evidence document.
+
+    Returns:
+        List of invariant result dicts, each with keys ``invariant``,
+        ``expected``, ``observed``, ``satisfied``, and ``severity`` (``info``
+        when satisfied, otherwise ``high`` or ``medium``).
+
+    Notes:
+        Satisfied checks are included with ``severity="info"`` so callers can
+        audit the full invariant trail, not only failures.
+    """
     f = evidence_feature_vector(evidence)
     results: list[dict[str, Any]] = []
 

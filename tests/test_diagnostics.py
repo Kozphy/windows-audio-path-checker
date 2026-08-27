@@ -1,6 +1,7 @@
+"""Tests for snapshot analysis: findings, severity, and device-name matching."""
+
 import json
 import unittest
-
 from audio_path_checker.diagnostics import (
     analyze_snapshot,
     likely_same_device,
@@ -8,6 +9,7 @@ from audio_path_checker.diagnostics import (
 
 
 def base_snapshot():
+    """Minimal healthy snapshot used as a template across analyze_snapshot tests."""
     return {
         "system": {"is_windows": True},
         "services": [
@@ -49,6 +51,8 @@ def base_snapshot():
 
 
 class AnalyzeSnapshotTests(unittest.TestCase):
+    """Finding codes and severities for browser, master volume, and Bluetooth."""
+
     def test_muted_browser_is_a_fix_item(self):
         snapshot = base_snapshot()
         snapshot["core_audio"]["sessions"] = [
@@ -280,6 +284,8 @@ class AnalyzeSnapshotTests(unittest.TestCase):
 
 
 class DeviceNameTests(unittest.TestCase):
+    """Fuzzy device-name equivalence for endpoint vs. PortAudio labels."""
+
     def test_equivalent_device_names(self):
         self.assertTrue(
             likely_same_device(
