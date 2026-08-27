@@ -47,7 +47,7 @@ from .diagnostics import (
     unmute_silent_browser_sessions,
 )
 from .inference import enrich_snapshot
-from .pipeline import run_audio_path_diagnosis
+from .pipeline import run_audio_path_diagnosis, replay_session
 from .storage import connect as connect_history
 from .storage import store_snapshot, store_timeline, summary as history_summary
 from .timeline import record_timeline, state_fingerprint
@@ -126,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-artifacts",
         action="store_true",
         help="Do not write artifacts/sessions evidence trail.",
+    )
+    parser.add_argument(
+        "--replay",
+        type=Path,
+        metavar="SESSION_DIR",
+        help=(
+            "Re-run classification against a captured session's "
+            "evidence-before.json without touching live hardware. Implies --no-gui."
+        ),
     )
     parser.add_argument(
         "--unmute-browsers",
@@ -359,11 +368,40 @@ def main(argv: list[str] | None = None) -> int:
         or args.add_bluetooth is not None
         or args.open_bluetooth_settings
         or args.json
+        or args.replay is not None
     )
     if not cli_mode:
         from .gui import main as gui_main
 
         gui_main()
+        return 0
+
+    if args.replay is not None:
+        result = replay_session(args.replay, write_artifacts=False)
+        if args.json:
+            payload = {
+                "evidence": result["evidence"],
+                "diagnosis": result["diagnosis"],
+                "plan": result["plan"],
+                "shadow_comparison": result.get("shadow_comparison"),
+                "summary": result["summary"],
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=True))
+        else:
+            print(result["report_text"])
+            cmp_ = result.get("shadow_comparison") or {}
+            print("\nShadow comparison")
+            print("-----------------")
+            print(f"Old state: {cmp_.get('old_state')}")
+            print(f"New state: {cmp_.get('new_state')}")
+            print(f"Old cause: {cmp_.get('old_cause')}")
+            print(f"New cause: {cmp_.get('new_cause')}")
+        state = str(
+            ((result.get("diagnosis") or {}).get("classification") or {}).get("state")
+            or ""
+        )
+        if state and state != "AUDIO_PATH_HEALTHY":
+            return 2
         return 0
 
     if mode is not None:

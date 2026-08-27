@@ -171,6 +171,100 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertEqual(plan["recommended"]["action"], "open_bluetooth_settings")
 
+    def test_paired_but_offline_is_not_stale_endpoint_inventory(self):
+        evidence = _evidence(
+            device={"paired": True, "connected": False, "last_connected": None},
+            audio={
+                "media_node_present": False,
+                "a2dp_present": False,
+                "endpoint_present": False,
+                "endpoint_active": False,
+            },
+        )
+        classification = classify_state(evidence)
+        self.assertEqual(
+            classification["state"], AudioPathState.PAIRED_NOT_CONNECTED.value
+        )
+        hypotheses = rank_hypotheses(evidence, classification)
+        self.assertEqual(hypotheses[0]["cause"], "bluetooth_device_disconnected")
+
+        plan = plan_remediation(
+            classification=classification,
+            hypotheses=hypotheses,
+            evidence=evidence,
+            mode="repair",
+        )
+        self.assertEqual(
+            plan["recommended"]["action"], "connect_headset_and_recheck"
+        )
+        all_actions = plan["actions"] + plan["blocked_actions"]
+        self.assertNotIn(
+            "refresh_audio_endpoint_inventory",
+            [action["action"] for action in all_actions],
+        )
+
+    def test_disconnected_signal_with_audio_nodes_is_stale_inventory(self):
+        evidence = _evidence(
+            device={"paired": True, "connected": False, "address": "c8247887e57c"},
+            audio={
+                "media_node_present": True,
+                "a2dp_present": False,
+                "endpoint_present": True,
+                "endpoint_active": False,
+            },
+            pnp={
+                "media_nodes": [
+                    {"name": "EDIFIER W800BT Pro", "address": "c8247887e57c"}
+                ],
+                "endpoint_nodes": [
+                    {"name": "EDIFIER W800BT Pro", "address": "c8247887e57c"}
+                ],
+            },
+        )
+        classification = classify_state(evidence)
+        self.assertEqual(
+            classification["state"], AudioPathState.STALE_PNP_INVENTORY.value
+        )
+        hypotheses = rank_hypotheses(evidence, classification)
+        self.assertEqual(hypotheses[0]["cause"], "stale_pnp_state")
+        plan = plan_remediation(
+            classification=classification,
+            hypotheses=hypotheses,
+            evidence=evidence,
+            mode="repair",
+        )
+        self.assertEqual(
+            plan["recommended"]["action"], "refresh_audio_endpoint_inventory"
+        )
+
+    def test_repair_does_not_refresh_inventory_while_headset_is_offline(self):
+        evidence = _evidence(
+            device={"paired": True, "connected": False, "last_connected": None},
+            audio={
+                "media_node_present": False,
+                "a2dp_present": False,
+                "endpoint_present": False,
+                "endpoint_active": False,
+            },
+        )
+        with patch(
+            "audio_path_checker.pipeline.refresh_audio_endpoint_inventory"
+        ) as refresh:
+            result = run_audio_path_diagnosis(
+                device_name="EDIFIER W800BT Pro",
+                mode="repair",
+                evidence=evidence,
+                write_artifacts=False,
+                execute=True,
+            )
+
+        refresh.assert_not_called()
+        self.assertEqual(
+            result["plan"]["recommended"]["action"],
+            "connect_headset_and_recheck",
+        )
+        self.assertFalse(result["verification"]["repair_command_succeeded"])
+
     def test_f_healthy_no_remediation(self):
         evidence = _evidence(
             audio={
@@ -225,6 +319,98 @@ class ScenarioTests(unittest.TestCase):
                 a["action"] == "clear_pairing_cache_and_repair"
                 for a in result["plan"]["blocked_actions"]
             )
+        )
+
+    def test_repair_refreshes_inventory_before_recollect_and_then_escalates(self):
+        evidence = _evidence(
+            device={"paired": True, "connected": True},
+            audio={
+                "media_node_present": False,
+                "a2dp_present": False,
+                "endpoint_present": False,
+                "endpoint_active": False,
+            },
+        )
+        events = []
+
+        def refresh(**_kwargs):
+            events.append("refresh")
+            return {
+                "action": "refresh_audio_endpoint_inventory",
+                "attempted": True,
+                "command_succeeded": True,
+                "detail": "inventory_queried",
+                "recovered": False,
+                "progress": False,
+                "postcondition_met": False,
+                "attempts": [],
+            }
+
+        def recollect(**_kwargs):
+            events.append("collect")
+            return evidence
+
+        with (
+            patch(
+                "audio_path_checker.pipeline.refresh_audio_endpoint_inventory",
+                side_effect=refresh,
+            ),
+            patch("audio_path_checker.pipeline.collect_evidence", side_effect=recollect),
+        ):
+            result = run_audio_path_diagnosis(
+                device_name="EDIFIER W800BT Pro",
+                mode="repair",
+                evidence=evidence,
+                write_artifacts=False,
+                execute=True,
+            )
+
+        self.assertEqual(events, ["refresh", "collect"])
+        self.assertTrue(result["verification"]["repair_command_succeeded"])
+        self.assertFalse(result["verification"]["system_recovered"])
+        self.assertEqual(
+            result["plan"]["attempted_actions"],
+            ["refresh_audio_endpoint_inventory"],
+        )
+        self.assertEqual(
+            result["plan"]["recommended"]["action"],
+            "restart_bluetooth_audio_services",
+        )
+
+    def test_failed_inventory_query_does_not_skip_the_safe_refresh(self):
+        evidence = _evidence(
+            device={"paired": True, "connected": True},
+            audio={
+                "media_node_present": False,
+                "a2dp_present": False,
+                "endpoint_present": False,
+                "endpoint_active": False,
+            },
+        )
+        with (
+            patch(
+                "audio_path_checker.pipeline.refresh_audio_endpoint_inventory",
+                return_value={
+                    "attempted": True,
+                    "command_succeeded": False,
+                    "detail": "inventory_query_failed",
+                },
+            ),
+            patch("audio_path_checker.pipeline.collect_evidence", return_value=evidence),
+        ):
+            result = run_audio_path_diagnosis(
+                device_name="EDIFIER W800BT Pro",
+                mode="repair",
+                evidence=evidence,
+                write_artifacts=False,
+                execute=True,
+            )
+
+        self.assertFalse(result["verification"]["repair_command_succeeded"])
+        self.assertEqual(result["plan"]["attempted_actions"], [])
+        self.assertEqual(
+            result["plan"]["recommended"]["action"],
+            "refresh_audio_endpoint_inventory",
         )
 
 

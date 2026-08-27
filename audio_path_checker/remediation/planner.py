@@ -11,7 +11,8 @@ Signal→action mapping examples:
 * ``RADIO_UNAVAILABLE`` → R3 enable adapter
 * ``DEVICE_NOT_PAIRED`` → R0 open Settings, R1 WinRT auto-pair
 * ``AUDIO_SERVICE_FAILURE`` → R2 restart Audiosrv / Endpoint Builder
-* Stack breakages (no endpoint, no A2DP, not connected) → R1 refresh → R2
+* A paired but genuinely disconnected device → R0 reconnect and recheck
+* Connected stack breakages (no endpoint / no A2DP) → R1 refresh → R2
   services → R3 re-enumerate → R4 radio bounce → R5 scoped re-pair
 
 Wrong default output must never trigger pairing reset.
@@ -33,6 +34,7 @@ def plan_remediation(
     hypotheses: list[dict[str, Any]],
     evidence: dict[str, Any],
     mode: str = "diagnose",
+    attempted_actions: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Build a risk-gated remediation plan from diagnosis output.
 
@@ -43,6 +45,8 @@ def plan_remediation(
         evidence: Normalized evidence (used for device name scoping).
         mode: Execution cap — ``diagnose``/``dry-run`` (R0), ``repair`` (R3),
             or ``aggressive-repair`` (R5).
+        attempted_actions: Successfully attempted actions that should not be
+            recommended again during the same recovery flow.
 
     Returns:
         Plan dict with:
@@ -68,7 +72,12 @@ def plan_remediation(
         "aggressive-repair": "R5",
     }.get(mode, "R0")
 
-    actions = _actions_for(state, cause, evidence)
+    attempted = set(attempted_actions or ())
+    actions = [
+        action
+        for action in _actions_for(state, cause, evidence)
+        if action["action"] not in attempted
+    ]
     # Recommend the safest useful action even in diagnose/dry-run.
     # Mode only gates what may be *executed*.
     executable = [a for a in actions if _risk_rank(a["risk"]) <= _risk_rank(max_risk)]
@@ -80,6 +89,7 @@ def plan_remediation(
         "max_risk": max_risk,
         "state": state,
         "primary_cause": cause,
+        "attempted_actions": sorted(attempted),
         "recommended": recommended,
         "actions": executable,
         "blocked_actions": blocked,
@@ -145,6 +155,25 @@ def _actions_for(
         add("none", "R0", "Path already healthy — no remediation")
         return actions
 
+    if state in {
+        AudioPathState.PROFILE_ENUMERATION_PENDING.value,
+        AudioPathState.ENDPOINT_ENUMERATION_PENDING.value,
+    }:
+        add(
+            "refresh_audio_endpoint_inventory",
+            "R1",
+            "Bounded settle: re-query MEDIA / AudioEndpoint while enumeration completes",
+            verifies=["media_node_present", "endpoint_present"],
+        )
+        add(
+            "restart_bluetooth_audio_services",
+            "R2",
+            "Escalate only if settle exhausts without progress",
+            elevates=True,
+            verifies=["a2dp_present", "endpoint_present"],
+        )
+        return actions
+
     if state == AudioPathState.ENDPOINT_NOT_DEFAULT.value or cause == "wrong_default_output":
         add(
             "set_default_playback_to_headset",
@@ -185,17 +214,56 @@ def _actions_for(
         )
         return actions
 
+    if state == AudioPathState.PAIRED_NOT_CONNECTED.value:
+        add(
+            "connect_headset_and_recheck",
+            "R0",
+            "Device is paired but no live Bluetooth/A2DP connection is observed; "
+            "power on / connect the headset before repairing endpoint inventory",
+            verifies=["device_connected"],
+        )
+        return actions
+
+    if state == AudioPathState.STALE_PNP_INVENTORY.value or cause == "stale_pnp_state":
+        add(
+            "refresh_audio_endpoint_inventory",
+            "R1",
+            "Identity-matched inventory exists while connected=false — re-query to "
+            "confirm ghosts vs reconnect race",
+            verifies=["device_connected", "endpoint_present"],
+        )
+        add(
+            "connect_headset_and_recheck",
+            "R0",
+            "If refresh still shows disconnected, reconnect the headset",
+            verifies=["device_connected"],
+        )
+        add(
+            "reenumerate_headset_audio_stack",
+            "R3",
+            "Scoped PnP refresh for the target headset address only",
+            elevates=True,
+            verifies=["media_node_present", "endpoint_present"],
+        )
+        add(
+            "clear_pairing_cache_and_repair",
+            "R5",
+            "Clear BTHPORT cache for scoped address only, then re-pair",
+            elevates=True,
+            verifies=["device_paired", "endpoint_present", "endpoint_active"],
+        )
+        return actions
+
     if state in {
         AudioPathState.MEDIA_NO_ENDPOINT.value,
         AudioPathState.CONNECTED_NO_A2DP.value,
         AudioPathState.A2DP_NO_MEDIA_NODE.value,
-        AudioPathState.PAIRED_NOT_CONNECTED.value,
         AudioPathState.ENDPOINT_DISABLED.value,
     }:
         add(
             "refresh_audio_endpoint_inventory",
             "R1",
-            "Low-risk re-query of MEDIA / AudioEndpoint after brief wait",
+            "Low-risk bounded re-query of MEDIA / AudioEndpoint",
             verifies=["endpoint_present"],
         )
         add(
@@ -226,6 +294,10 @@ def _actions_for(
             elevates=True,
             verifies=["device_paired", "endpoint_present", "endpoint_active"],
         )
+        return actions
+
+    if state == AudioPathState.INSUFFICIENT_EVIDENCE.value:
+        add("collect_additional_evidence", "R0", "Evidence incomplete — gather more signals")
         return actions
 
     add("collect_additional_evidence", "R0", "State unknown — gather more signals")

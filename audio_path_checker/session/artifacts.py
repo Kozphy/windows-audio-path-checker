@@ -54,6 +54,13 @@ def append_action(session_dir: Path, record: dict[str, Any]) -> None:
         handle.write(line + "\n")
 
 
+def append_recovery(session_dir: Path, record: dict[str, Any]) -> None:
+    """Append one closed-loop recovery attempt to ``recovery.jsonl``."""
+    line = json.dumps(record, ensure_ascii=False)
+    with (session_dir / "recovery.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
 def write_session_bundle(
     session_dir: Path,
     *,

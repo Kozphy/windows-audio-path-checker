@@ -161,7 +161,7 @@ flowchart TD
   F --> G{mode allows execute?}
   G -->|diagnose / dry-run| H[verify_recovery<br/>repair_command_succeeded=false]
   G -->|repair / aggressive-repair| I{action == refresh_audio_endpoint_inventory?}
-  I -->|Yes| J[sleep + recollect + re-diagnose]
+  I -->|Yes| J[query MEDIA + AudioEndpoint<br/>settle + recollect + re-diagnose]
   I -->|No| H
   J --> K[verify_recovery]
   H --> L[write_session_bundle]
@@ -175,7 +175,7 @@ flowchart TD
 Notes from implementation:
 
 - Policy still **recommends** R1–R5 actions in diagnose mode; only R0 is marked executable for diagnose/dry-run.
-- Python execute path today only wires `refresh_audio_endpoint_inventory`. R2–R5 actions are planned/blocked, not executed by `pipeline.py`.
+- Python execute path today only wires the non-elevated `refresh_audio_endpoint_inventory` query. A genuinely disconnected paired device receives an R0 reconnect instruction instead. R2–R5 actions are planned/blocked, not executed by `pipeline.py`.
 - Elevated Bluetooth recovery is a separate entry (`Fix-Edifier-Bluetooth.bat`), not invoked automatically by `--diagnose`.
 
 ---

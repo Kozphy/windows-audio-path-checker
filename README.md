@@ -102,6 +102,13 @@ GUI / classic session scan:
 | `--device NAME` | Scope headset matching (default EDIFIER W800BT Pro) |
 | `--no-artifacts` | Skip writing `artifacts/sessions/…` |
 
+`PAIRED_NOT_CONNECTED` with no A2DP, MEDIA, or AudioEndpoint nodes is treated
+as a genuinely offline headset: power on/connect the device and recheck before
+any endpoint repair. The R1 refresh is reserved for a connected headset with a
+missing audio stack, or for contradictory connection and endpoint evidence. It
+only re-queries the `MEDIA` and `AudioEndpoint` inventories; it does not restart
+services, scan all PnP devices, toggle the adapter, or remove pairing.
+
 Legacy opt-in repairs remain available:
 
 ```powershell
@@ -221,6 +228,40 @@ Physical device → Radio → Paired → Connected → A2DP → MEDIA
 
 Wrong default output must **not** trigger pairing reset.
 
+## Example: EDIFIER paired but powered off / idle
+
+```text
+EDIFIER W800BT Pro — Audio Path Diagnostic
+
+Bluetooth Adapter      PASS
+Device Identity        PASS
+Device Paired          PASS
+Device Connected       FAIL
+A2DP Profile           NOT_APPLICABLE
+MEDIA Node             NOT_APPLICABLE
+Audio Endpoint         NOT_APPLICABLE
+Windows Audio          PASS
+Default Output         UNKNOWN
+
+Diagnosis
+---------
+State: PAIRED_NOT_CONNECTED
+Likely cause: bluetooth_device_disconnected
+Confidence: high (87%)
+
+Recommended action
+------------------
+connect_headset_and_recheck
+Risk: R0
+```
+
+Missing MEDIA/AudioEndpoint while disconnected is **not** stale PnP. Replay a
+captured session without touching hardware:
+
+```powershell
+.\.venv\Scripts\python -m audio_path_checker --replay artifacts\sessions\2026-08-27T170534
+```
+
 ## Example: EDIFIER connected, no sound
 
 ```text
@@ -256,6 +297,7 @@ artifacts/sessions/<timestamp>/
   evidence-before.json
   diagnosis.json
   actions.jsonl
+  recovery.jsonl
   evidence-after.json
   summary.json
   dataset-record.json

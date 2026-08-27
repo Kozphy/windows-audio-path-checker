@@ -75,10 +75,16 @@ def _enrich_from_snapshot(
     audio["master_volume"] = core.get("master_volume")
     audio["master_muted"] = core.get("master_muted")
 
-    device_name = str((evidence.get("device") or {}).get("name") or "")
-    is_default = False
+    device_name = str(
+        (evidence.get("environment") or {}).get("device_filter")
+        or (evidence.get("device") or {}).get("name")
+        or ""
+    )
+    is_default = None
     if default_name and device_name:
         is_default = device_name.casefold() in default_name.casefold()
+    elif default_name:
+        is_default = False
     audio["is_default_playback"] = is_default
     evidence["audio"] = audio
 
@@ -270,9 +276,9 @@ def evidence_feature_vector(evidence: dict[str, Any]) -> dict[str, Any]:
         WinRT availability).
 
     Notes:
-        Missing / ``None`` / unknown values are coerced with ``bool(...)``, so
-        unknown default-output becomes ``False``. Callers that must distinguish
-        unknown from false should read raw ``evidence["audio"]`` instead.
+        Most flags use ``bool(...)`` and collapse missing→False. ``is_default_playback``
+        preserves ``None`` (UNKNOWN) so CLI/check status can distinguish unset from
+        explicitly false.
     """
     device = evidence.get("device") or {}
     bluetooth = evidence.get("bluetooth") or {}
@@ -292,7 +298,7 @@ def evidence_feature_vector(evidence: dict[str, Any]) -> dict[str, Any]:
         "media_node_present": bool(audio.get("media_node_present")),
         "endpoint_present": bool(audio.get("endpoint_present")),
         "endpoint_active": bool(audio.get("endpoint_active")),
-        "is_default_playback": bool(audio.get("is_default_playback")),
+        "is_default_playback": audio.get("is_default_playback"),
         "audio_services_healthy": _running("Audiosrv")
         and _running("AudioEndpointBuilder"),
         "bt_services_healthy": _running("bthserv") and _running("BthAvctpSvc"),
