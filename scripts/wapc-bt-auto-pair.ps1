@@ -54,6 +54,7 @@ $btModuleRoot = Join-Path $scriptRoot 'Bluetooth'
 
 $requiredModules = @(
   (Join-Path $btModuleRoot 'WapcBluetoothCore.psm1'),
+  (Join-Path $btModuleRoot 'WapcBluetoothIdentity.psm1'),
   (Join-Path $btModuleRoot 'WapcBluetoothCleanup.psm1'),
   (Join-Path $btModuleRoot 'WapcBluetoothServices.psm1'),
   (Join-Path $scriptRoot 'Platform\WinRT.psm1'),
@@ -145,23 +146,49 @@ $namePatterns = Get-WapcNamePatterns -TargetName $TargetName
 
 try {
   # --- CLEANUP ---
+  $cleanupVerified = $true
   if (-not $NoCleanup) {
     Set-WapcMachineState -Context $Context -State 'CLEANING_STALE_ASSOCIATION' -Log ${function:Log}
     $cleanup = Remove-WapcBluetoothGhostAssociation -Context $Context `
       -NamePatterns $namePatterns -DeviceAddress $TargetAddress `
       -WhatIfPreference:$WhatIfPreference -Log ${function:Log}
-    if ($cleanup.postcondition -eq 'PASS') {
+    if ($cleanup.postcondition -eq 'PASS' -and $cleanup.cleanup_verified) {
       Set-WapcStageResult -Results $Context.stages -Stage 'GhostCleanup' -Value 'PASS'
+      $cleanupVerified = $true
     } elseif ($cleanup.postcondition -eq 'BLOCKED') {
       Set-WapcStageResult -Results $Context.stages -Stage 'GhostCleanup' -Value 'NOT_RUN'
+      $cleanupVerified = $false
+      $Context.failure_classification = 'INSUFFICIENT_PRIVILEGES'
+      $Context.final_result = 'FAILED'
+      [void]$Context.failures.Add((New-WapcFailure -Stage 'CLEANING_STALE_ASSOCIATION' `
+        -Classification 'INSUFFICIENT_PRIVILEGES' -Reason 'Cleanup blocked without elevation'))
     } else {
       Set-WapcStageResult -Results $Context.stages -Stage 'GhostCleanup' -Value 'FAIL'
+      $cleanupVerified = $false
+      $Context.failure_classification = 'GHOST_CLEANUP_FAILED'
+      $Context.final_result = 'FAILED'
       [void]$Context.failures.Add((New-WapcFailure -Stage 'CLEANING_STALE_ASSOCIATION' `
-        -Classification 'GHOST_CLEANUP_FAILED' -Reason ('Remaining nodes=' + $cleanup.remaining_nodes)))
+        -Classification 'GHOST_CLEANUP_FAILED' `
+        -Reason ('Cleanup verification failed; remaining_nodes=' + $cleanup.remaining_nodes +
+          ' pnp_removal=' + $cleanup.pnp_removal)))
     }
   } else {
     Set-WapcStageResult -Results $Context.stages -Stage 'GhostCleanup' -Value 'SKIPPED'
+    $cleanupVerified = $true
   }
+
+  if (-not $cleanupVerified) {
+    Set-WapcMachineState -Context $Context -State 'CLEANUP_FAILED' -Log ${function:Log}
+    Log 'Recovery aborted before adapter reset (cleanup not verified).'
+    Set-WapcStageResult -Results $Context.stages -Stage 'AdapterReset' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'ServicesHealthy' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'DiscoveryApi' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'AudioEndpoint' -Value 'NOT_RUN'
+  } else {
 
   # --- ADAPTER ---
   if (-not $NoAdapterReset) {
@@ -194,11 +221,12 @@ try {
     [void]$Context.failures.Add((New-WapcFailure -Stage 'CHECKING_DISCOVERY_CAPABILITY' `
       -Classification 'DISCOVERY_API_UNAVAILABLE' -Reason ([string]$cap.reason)))
     Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'NOT_RUN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumeration' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumerationCapability' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'NOT_RUN'
     Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'NOT_RUN'
     Set-WapcStageResult -Results $Context.stages -Stage 'PairableEndpoint' -Value 'NOT_RUN'
     Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
     Set-WapcStageResult -Results $Context.stages -Stage 'AudioEndpoint' -Value 'NOT_RUN'
   }
 
@@ -216,7 +244,7 @@ try {
   } elseif ($pairOutcome -and $pairOutcome.classification) {
     $Context.failure_classification = $pairOutcome.classification
     $Context.final_result = 'FAILED'
-  } elseif ($pairOutcome -and $pairOutcome.pair_success -and $pairOutcome.verification -and -not $pairOutcome.verification.audio_endpoint_ready) {
+  } elseif ($pairOutcome -and $pairOutcome.pair_success -and $pairOutcome.verification -and -not $pairOutcome.verification.exact_target_audio_endpoint_found -and -not $pairOutcome.verification.audio_endpoint_ready) {
     $Context.final_result = 'PARTIAL_SUCCESS'
     if (-not $Context.failure_classification) {
       $Context.failure_classification = 'PAIRING_SUCCEEDED_AUDIO_ENDPOINT_MISSING'
@@ -224,6 +252,8 @@ try {
   } else {
     $Context.final_result = 'FAILED'
   }
+
+  } # end cleanupVerified else - adapter/discovery/pairing only after cleanup PASS
 } finally {
   if ($Context.is_elevated) {
     foreach ($s in @('bthserv', 'BTAGService', 'BthAvctpSvc', 'DeviceAssociationService')) {
@@ -239,4 +269,10 @@ Write-WapcDiagnosticReport -Context $Context
 Write-WapcFinalSummary -Context $Context
 Write-Host 'Press any key to close...'
 $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-if ($Context.final_result -eq 'SUCCESS') { exit 0 } else { exit 1 }
+$exitCode = 1
+if ($Context.final_result -eq 'SUCCESS') {
+  $exitCode = 0
+} elseif ($Context.failure_classification -and (Get-Command Get-WapcExitCodeForClassification -ErrorAction SilentlyContinue)) {
+  $exitCode = Get-WapcExitCodeForClassification -Classification $Context.failure_classification
+}
+exit $exitCode

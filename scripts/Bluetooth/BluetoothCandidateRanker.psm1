@@ -1,6 +1,8 @@
 #Requires -Version 5.1
 # Rank candidates via Python with deterministic PowerShell fallback.
 
+Import-Module (Join-Path $PSScriptRoot 'WapcBluetoothIdentity.psm1') -Force -Global
+
 function Get-PythonRankerPath {
   $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
   $venvPy = Join-Path $repoRoot '.venv\Scripts\python.exe'
@@ -84,14 +86,25 @@ function Rank-WapcBluetoothCandidatesFallback {
     [bool]$ClassicEnumOk,
     [bool]$AepEnumOk
   )
+  $annotated = @($Candidates | ForEach-Object {
+    Add-WapcCandidateIdentityAnnotation -Candidate $_ -TargetName $TargetName -TargetAddress $TargetAddress
+  })
   $ranked = New-Object System.Collections.ArrayList
-  foreach ($c in $Candidates) {
+  foreach ($c in $annotated) {
     $score = 0
     $components = New-Object System.Collections.ArrayList
-    if (-not $c.enumeration_succeeded) {
+    if ($c.disposition -eq 'REJECTED_WRONG_DEVICE') {
+      $score -= 500
+      [void]$components.Add('-500 REJECTED_WRONG_DEVICE')
+    } elseif (-not $c.enumeration_succeeded) {
       $score -= 200
       [void]$components.Add('-200 enumeration failed')
     } else {
+      $exp = ConvertTo-WapcNormalizedBluetoothAddress $TargetAddress
+      $obs = ConvertTo-WapcNormalizedBluetoothAddress ([string]$c.device_address)
+      if ($exp -and $obs -and ($exp -eq $obs)) {
+        $score += 1000; [void]$components.Add('+1000 exact address')
+      }
       if ([string]$c.name -eq $TargetName) { $score += 100; [void]$components.Add('+100 exact name') }
       if ($c.can_pair) { $score += 40; [void]$components.Add('+40 CanPair') } else { $score -= 100 }
       if ($c.is_classic) { $score += 25; [void]$components.Add('+25 classic') }
@@ -103,23 +116,28 @@ function Rank-WapcBluetoothCandidatesFallback {
       name = $c.name; id = $c.id; kind = $c.kind; can_pair = $c.can_pair
       is_paired = $c.is_paired; protocol_id = $c.protocol_id; device_address = $c.device_address
       score = $score; score_components = @($components); classification = 'Fallback'
+      disposition = $c.disposition; identity_matched = $c.identity_matched
+      rejection_reason = $c.rejection_reason
     })
   }
   $sorted = @($ranked | Sort-Object score -Descending)
   for ($i = 0; $i -lt $sorted.Count; $i++) { $sorted[$i] | Add-Member -NotePropertyName rank -NotePropertyValue ($i + 1) -Force }
 
+  $accepted = @($annotated | Where-Object { $_.disposition -eq 'ACCEPTED' })
   $pairability = 'UNKNOWN'
   if (-not $ClassicEnumOk -and -not $AepEnumOk) { $pairability = 'UNKNOWN' }
   else {
-    $classic = @($Candidates | Where-Object { $_.is_classic -and $_.enumeration_succeeded })
+    $classic = @($accepted | Where-Object { $_.is_classic -and $_.enumeration_succeeded })
     if ($classic.Count -eq 0 -and -not $ClassicEnumOk) { $pairability = 'UNKNOWN' }
     elseif (@($classic | Where-Object { $_.can_pair -and -not $_.is_paired }).Count -gt 0) { $pairability = 'PAIRABLE' }
-    elseif ($classic.Count -gt 0) { $pairability = 'NOT_PAIRABLE' }
+    elseif ($classic.Count -gt 0 -or $accepted.Count -gt 0) { $pairability = 'NOT_PAIRABLE' }
+    else { $pairability = 'NOT_PAIRABLE' }
   }
 
   $selected = $null
   if ($pairability -ne 'UNKNOWN') {
     foreach ($c in $sorted) {
+      if ($c.disposition -ne 'ACCEPTED') { continue }
       if ($c.can_pair -and -not $c.is_paired) { $selected = $c; break }
       if ($c.is_paired) { $selected = $c; break }
     }
@@ -130,6 +148,11 @@ function Rank-WapcBluetoothCandidatesFallback {
     selected = $selected
     pairability = $pairability
     pairable_found = ($null -ne $selected -and $selected.can_pair)
+    exact_target_discovered = ($accepted.Count -gt 0)
+    target_discovered = ($accepted.Count -gt 0)
+    any_bluetooth_device_discovered = ($annotated.Count -gt 0)
+    exact_target_already_paired = ($null -ne $selected -and $selected.is_paired -and $selected.identity_matched)
+    rejected = @($annotated | Where-Object { $_.disposition -ne 'ACCEPTED' })
     ranker_source = 'powershell_fallback'
   }
 }
@@ -184,6 +207,12 @@ function Write-BluetoothCandidateRanking {
     Write-Host ('#{0} score={1}' -f $c.rank, $c.score)
     Write-Host ('  {0}' -f $c.name)
     Write-Host ('  CanPair={0} Kind={1} Class={2}' -f $c.can_pair, $c.kind, $c.classification)
+    if ($null -ne $c.disposition) {
+      Write-Host ('  IdentityMatch={0} Disposition={1}' -f $c.identity_matched, $c.disposition)
+      if ($c.rejection_reason) {
+        Write-Host ('  Reason={0}' -f $c.rejection_reason)
+      }
+    }
     if ($c.score_components) {
       foreach ($line in $c.score_components) { Write-Host ('    {0}' -f $line) }
     }

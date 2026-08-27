@@ -223,15 +223,19 @@ class FailureTaxonomyTests(unittest.TestCase):
 
 class CleanupSafetyTests(unittest.TestCase):
     def test_cleanup_does_not_remove_unrelated_devices(self):
-        """Name filter must scope EDIFIER only - documented in script patterns."""
-        pattern = "EDIFIER W800BT|C8247887E57C"
-        unrelated = "POLYWELL TM-086"
-        self.assertIsNone(
-            __import__("re").search(pattern, unrelated, __import__("re").IGNORECASE)
+        """Address identity must reject sibling Edifier headsets."""
+        from audio_path_checker.bluetooth_pairing.identity import pnp_node_matches_target
+
+        sibling = pnp_node_matches_target(
+            friendly_name="EDIFIER WH700NB",
+            instance_id=r"BTHENUM\Dev_CC14BC0BDE24\a&1",
+            target_name=TARGET,
+            target_address=ADDR,
         )
+        self.assertFalse(sibling["matched"])
         related = "EDIFIER W800BT Pro"
         self.assertIsNotNone(
-            __import__("re").search("EDIFIER W800BT", related, __import__("re").IGNORECASE)
+            __import__("re").search("W800BT", related, __import__("re").IGNORECASE)
         )
 
 

@@ -3,6 +3,7 @@
 
 # -Global prevents nested-module steal of Core exports from the caller session.
 Import-Module (Join-Path $PSScriptRoot 'WapcBluetoothCore.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'WapcBluetoothIdentity.psm1') -Force -Global
 
 function Set-WapcMachineState {
   param(
@@ -37,33 +38,70 @@ function Write-WapcPairingDiagnosis {
     [Parameter(Mandatory)]$Context,
     $Enumeration,
     [string]$Pairability,
-    [string]$Classification
+    [string]$Classification,
+    [array]$ObservedCandidates = @(),
+    [bool]$ExactTargetDiscovered = $false
   )
   Write-Host ''
   Write-Host '[PAIRING DIAGNOSIS]'
   Write-Host ''
-  if ($Enumeration.target_discovered) {
-    Write-Host 'Target visibility'
-    Write-Host ('PASS - {0} was discovered.' -f $Context.target_name)
+  Write-Host 'TARGET'
+  Write-Host ('  Name       {0}' -f $Context.target_name)
+  Write-Host ('  Address    {0}' -f $Context.target_address)
+  Write-Host ''
+  Write-Host 'Target visibility'
+  if ($ExactTargetDiscovered -or ($Enumeration -and $Enumeration.exact_target_discovered)) {
+    Write-Host ('PASS - {0} was discovered (identity verified).' -f $Context.target_name)
   } else {
-    Write-Host 'Target visibility'
-    Write-Host 'FAIL - target not discovered during scan window.'
+    Write-Host ('FAIL - {0} was not discovered.' -f $Context.target_name)
+    Write-Host ''
+    Write-Host 'Expected:'
+    Write-Host ('  Name: {0}' -f $Context.target_name)
+    Write-Host ('  Address: {0}' -f $Context.target_address)
+    $others = @($ObservedCandidates | Where-Object {
+      $_.disposition -ne 'ACCEPTED' -or -not $_.identity_matched
+    })
+    if ($others.Count -gt 0) {
+      Write-Host ''
+      Write-Host 'Other Bluetooth devices observed:'
+      foreach ($o in $others) {
+        Write-Host ('  {0}' -f $o.name)
+        Write-Host ('  {0}' -f $o.device_address)
+        Write-Host ('  Identity: MISMATCH ({0})' -f $(if ($o.rejection_reason) { $o.rejection_reason } else { 'REJECTED' }))
+      }
+    }
   }
   Write-Host ''
   if ($Enumeration.classic_enumeration_all_failed) {
-    Write-Host 'Windows Classic endpoint enumeration'
+    Write-Host 'Classic enumeration API'
     Write-Host 'ERROR - typed WinRT FindAllAsync invocation failed.'
   } elseif ($Enumeration.classic_enumeration_succeeded) {
-    Write-Host 'Windows Classic endpoint enumeration'
+    Write-Host 'Classic enumeration API'
     Write-Host 'PASS'
   } else {
-    Write-Host 'Windows Classic endpoint enumeration'
+    Write-Host 'Classic enumeration API'
     Write-Host 'UNKNOWN'
+  }
+  Write-Host ''
+  if ($ExactTargetDiscovered) {
+    Write-Host 'Target Classic endpoint'
+    Write-Host 'FOUND'
+  } else {
+    Write-Host 'Target Classic endpoint'
+    Write-Host 'NOT_FOUND'
   }
   Write-Host ''
   Write-Host ('Pairability: {0}' -f $Pairability)
   if ($Pairability -eq 'UNKNOWN') {
-    Write-Host 'UNKNOWN - cannot determine until Classic endpoint enumeration succeeds.'
+    if ($ExactTargetDiscovered) {
+      Write-Host 'UNKNOWN - cannot determine pairability for the configured target.'
+    } elseif ($Enumeration -and $Enumeration.classic_enumeration_succeeded) {
+      Write-Host 'NOT_RUN - configured target Classic endpoint was not discovered.'
+    } else {
+      Write-Host 'UNKNOWN - Classic enumeration API did not succeed.'
+    }
+  } elseif ($Pairability -eq 'NOT_RUN') {
+    Write-Host 'NOT_RUN - downstream stage skipped because configured target was not discovered.'
   }
   Write-Host ''
   if ($Classification -in @('CLASSIC_ENDPOINT_ENUMERATION_FAILED', 'PAIRABILITY_UNDETERMINED', 'INSUFFICIENT_PRIVILEGES')) {
@@ -72,13 +110,19 @@ function Write-WapcPairingDiagnosis {
     Write-Host ''
     Write-Host 'Confidence:'
     Write-Host 'HIGH'
+  } elseif ($Classification -in @('TARGET_NOT_DISCOVERED', 'TARGET_IDENTITY_MISMATCH')) {
+    Write-Host 'Most likely cause:'
+    Write-Host 'TARGET_ABSENT_OR_WRONG_DEVICE_OBSERVED'
+    Write-Host ''
+    Write-Host 'Unrelated Bluetooth devices were detected but were not'
+    Write-Host 'used as evidence for target recovery.'
   } elseif ($Classification -eq 'DISCOVERABLE_NOT_PAIRABLE') {
     Write-Host 'Most likely cause:'
     Write-Host 'HEADSET_PAIRING_MODE_OR_MULTIPOINT'
     Write-Host ''
     Write-Host 'Recommended checks:'
     Write-Host '1. Hold headset power until pairing LED flashes.'
-    Write-Host '2. Disconnect EDIFIER from phones/tablets using multipoint.'
+    Write-Host '2. Disconnect target headset from phones/tablets using multipoint.'
     Write-Host '3. Keep headset within 1 metre of the PC.'
   }
 }
@@ -96,9 +140,15 @@ function Invoke-WapcBluetoothPairing {
   )
 
   $btRoot = $PSScriptRoot
-  Import-Module (Join-Path $btRoot 'BluetoothDiscovery.psm1') -Force
-  Import-Module (Join-Path $btRoot 'BluetoothCandidateRanker.psm1') -Force
-  Import-Module (Join-Path $btRoot 'BluetoothPairingVerifier.psm1') -Force
+  if (-not (Get-Command Get-WapcBluetoothCandidates -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $btRoot 'BluetoothDiscovery.psm1') -Force -Global
+  }
+  if (-not (Get-Command Rank-WapcBluetoothCandidates -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $btRoot 'BluetoothCandidateRanker.psm1') -Force -Global
+  }
+  if (-not (Get-Command Test-BluetoothPairVerification -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $btRoot 'BluetoothPairingVerifier.psm1') -Force -Global
+  }
 
   $namePatterns = Get-WapcNamePatterns -TargetName $Context.target_name
   $pairResultType = [Windows.Devices.Enumeration.DevicePairingResult]
@@ -108,16 +158,22 @@ function Invoke-WapcBluetoothPairing {
   & $Log 'Put target device in pairing mode NOW (LED flashing).'
 
   $deadline = (Get-Date).AddSeconds($DiscoveryTimeoutSec)
+  $discoveryStarted = Get-Date
   $cycle = 0
   $allCandidates = New-Object System.Collections.ArrayList
   $lastEnumeration = $null
   $lastRank = $null
   $pairSuccess = $false
   $pairAttempted = $false
+  $exactAlreadyPaired = $false
   $selectedCandidate = $null
   $pairingResult = $null
   $verification = $null
   $failure = $null
+  $pairRequestOutcome = 'NOT_RUN'
+  $targetSeenInWindow = $false
+  $nonTargetSeenInWindow = $false
+  $rankerRan = $false
 
   while (((Get-Date) -lt $deadline) -and (-not $pairSuccess)) {
     $cycle++
@@ -134,14 +190,30 @@ function Invoke-WapcBluetoothPairing {
       if (-not $exists) { [void]$allCandidates.Add($c) }
     }
 
-    if ($lastEnumeration.target_discovered) {
-      Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'PASS'
+    if ($lastEnumeration.classic_enumeration_all_failed) {
+      Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumerationCapability' -Value 'ERROR'
+    } elseif ($lastEnumeration.classic_enumeration_succeeded) {
+      Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumerationCapability' -Value 'PASS'
     }
 
-    if ($lastEnumeration.classic_enumeration_all_failed) {
-      Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumeration' -Value 'ERROR'
-    } elseif ($lastEnumeration.classic_enumeration_succeeded) {
-      Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumeration' -Value 'PASS'
+    foreach ($c in @($batch)) {
+      if ($c.disposition -eq 'ACCEPTED' -and $c.identity_matched) {
+        $targetSeenInWindow = $true
+      } elseif ($c.disposition -in @('REJECTED_WRONG_DEVICE', 'REJECTED_INSUFFICIENT_IDENTITY')) {
+        $nonTargetSeenInWindow = $true
+        $existsObs = $false
+        foreach ($o in @($Context.observed_non_target_devices)) {
+          if ($o.address -eq $c.device_address) { $existsObs = $true; break }
+        }
+        if (-not $existsObs -and $c.device_address) {
+          [void]$Context.observed_non_target_devices.Add([ordered]@{
+            name    = [string]$c.name
+            address = [string]$c.device_address
+            role    = 'NON_TARGET_DEVICE'
+            reason  = 'CONFIGURED_TARGET_MISMATCH'
+          })
+        }
+      }
     }
 
     if ($VerboseLog -or $Diagnostics) {
@@ -157,6 +229,7 @@ function Invoke-WapcBluetoothPairing {
     }
 
     Set-WapcMachineState -Context $Context -State 'RANKING_CANDIDATES' -Cycle $cycle -Log $Log
+    $rankerRan = $true
     $classicOk = [bool]$lastEnumeration.classic_enumeration_succeeded
     $aepOk = [bool]$lastEnumeration.aep_enumeration_succeeded
     $lastRank = Rank-WapcBluetoothCandidates -Candidates @($allCandidates.ToArray()) `
@@ -164,8 +237,32 @@ function Invoke-WapcBluetoothPairing {
       -ClassicEnumOk:$classicOk -AepEnumOk:$aepOk -Log $Log
     Write-BluetoothCandidateRanking -RankResult $lastRank
 
+    if ($lastRank.exact_target_discovered -or $lastRank.target_discovered) {
+      Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'PASS'
+      if ($lastRank.selected -and ($lastRank.selected.is_classic -or $lastRank.selected.protocol_id)) {
+        Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'PASS'
+      } elseif ($lastRank.exact_target_already_paired) {
+        Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'PASS'
+      } else {
+        Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'NOT_FOUND'
+      }
+      if ($lastEnumeration) {
+        $lastEnumeration.target_discovered = $true
+        $lastEnumeration.exact_target_discovered = $true
+      }
+    } else {
+      Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'FAIL'
+      Set-WapcStageResult -Results $Context.stages -Stage 'TargetClassicEndpoint' -Value 'NOT_RUN'
+      if ($lastEnumeration) {
+        $lastEnumeration.target_discovered = $false
+        $lastEnumeration.exact_target_discovered = $false
+      }
+    }
+
     $pairability = [string]$lastRank.pairability
-    if ($pairability -eq 'UNKNOWN') {
+    if (-not ($lastRank.exact_target_discovered -or $lastRank.target_discovered)) {
+      Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'NOT_RUN'
+    } elseif ($pairability -eq 'UNKNOWN') {
       Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'UNKNOWN'
     } elseif ($pairability -eq 'PAIRABLE') {
       Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'PASS'
@@ -184,7 +281,13 @@ function Invoke-WapcBluetoothPairing {
     }
 
     $selected = $lastRank.selected
-    if ($selected -and $selected.can_pair -and -not $selected.is_paired) {
+    # Hard identity gate — never pair/verify a wrong-address device.
+    if ($selected -and -not $selected.identity_matched -and $selected.disposition -ne 'ACCEPTED') {
+      & $Log ('Rejecting selected candidate as wrong device: ' + $selected.name + ' ' + $selected.device_address)
+      $selected = $null
+    }
+
+    if ($selected -and $selected.can_pair -and -not $selected.is_paired -and $selected.identity_matched) {
       Set-WapcStageResult -Results $Context.stages -Stage 'PairableEndpoint' -Value 'PASS'
       Set-WapcMachineState -Context $Context -State 'PAIRABLE_CANDIDATE_FOUND' -Log $Log
 
@@ -199,6 +302,7 @@ function Invoke-WapcBluetoothPairing {
       Set-WapcMachineState -Context $Context -State 'PAIRING' -Log $Log
       Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'PASS'
       $pairAttempted = $true
+      $pairRequestOutcome = 'PAIR_REQUEST_STARTED'
       $selectedCandidate = $selected
 
       $pop = $devRef.Pairing.PairAsync()
@@ -213,35 +317,86 @@ function Invoke-WapcBluetoothPairing {
         & $Log ('PairAsync result: Status=' + $pres.Status + ' normalized=' + $mapped.normalized)
         if ($mapped.normalized -match 'PAIRED') {
           $pairSuccess = $true
-          Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'PASS'
+          $pairRequestOutcome = 'PAIR_REQUEST_SUCCEEDED'
+          Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'PASS'
           break
         }
+        $pairRequestOutcome = 'PAIR_REQUEST_FAILED'
         $failure = New-WapcFailure -Stage 'PAIRING' -Classification $mapped.failure `
           -Reason ('PairAsync returned ' + $pres.Status)
         break
       } else {
+        $pairRequestOutcome = 'PAIR_REQUEST_TIMEOUT'
         $failure = New-WapcFailure -Stage 'PAIRING' -Classification 'PAIRING_TIMEOUT' -Reason 'PairAsync timed out'
         break
       }
-    } elseif ($selected -and $selected.is_paired) {
-      $pairSuccess = $true
-      $selectedCandidate = $selected
-      Set-WapcStageResult -Results $Context.stages -Stage 'PairableEndpoint' -Value 'PASS'
-      Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'PASS'
-      break
+    } elseif ($selected -and $selected.is_paired -and $selected.identity_matched) {
+      # Exact target already paired — verify *target* A2DP/audio, never sibling endpoints.
+      $exactAlreadyPaired = $true
+      $quick = Test-BluetoothPairVerification -NamePatterns $namePatterns `
+        -DeviceAddress $Context.target_address -TargetName $Context.target_name `
+        -WaitSeconds 4 -Log $Log
+      if ($quick.exact_target_audio_endpoint_found -and $quick.exact_target_a2dp_endpoint_found) {
+        $pairSuccess = $true
+        $selectedCandidate = $selected
+        Set-WapcStageResult -Results $Context.stages -Stage 'PairableEndpoint' -Value 'PASS'
+        Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_REQUIRED'
+        Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'PASS'
+        $verification = $quick
+        break
+      }
+
+      & $Log 'Exact target IsPaired=True but target audio path missing - UnpairAsync then re-pair'
+      $devRef = $null
+      foreach ($c in $allCandidates) { if ($c.id -eq $selected.id) { $devRef = $c.device_ref; break } }
+      if (-not $devRef) {
+        $devRef = ($allCandidates | Where-Object { $_.device_address -eq $Context.target_address } | Select-Object -First 1).device_ref
+      }
+      if ($devRef) {
+        try {
+          $unpairType = [Windows.Devices.Enumeration.DeviceUnpairingResult]
+          $null = [Windows.Devices.Enumeration.DeviceUnpairingResult, Windows.Devices.Enumeration, ContentType = WindowsRuntime]
+          $uop = $devRef.Pairing.UnpairAsync()
+          $ures = Invoke-WapcWinRt $uop $unpairType 30000
+          & $Log ('UnpairAsync status=' + $(if ($ures) { $ures.Status } else { 'timeout/null' }))
+        } catch {
+          & $Log ('UnpairAsync failed: ' + $_.Exception.Message)
+        }
+      }
+      $allCandidates = New-Object System.Collections.ArrayList
+      & $Log 'Put headset in pairing mode (LED flashing) for re-pair...'
+      Start-Sleep -Seconds 5
+      continue
     } else {
       Write-Host ''
-      Write-Host ('[DISCOVERY] {0} detected' -f $Context.target_name)
-      Write-Host ('Endpoints this scan: {0}' -f $batch.Count)
-      Write-Host '[ACTION] Searching for pairable Classic association endpoint...'
+      if ($lastRank -and -not $lastRank.exact_target_discovered -and $batch.Count -gt 0) {
+        Write-Host '[DISCOVERY] Bluetooth devices observed but none match target identity'
+        foreach ($c in $batch) {
+          Write-Host ('  observed={0} addr={1} disposition={2}' -f $c.name, $c.device_address, $c.disposition)
+        }
+      } else {
+        Write-Host ('[DISCOVERY] {0} scan cycle' -f $Context.target_name)
+        Write-Host ('Endpoints this scan: {0}' -f $batch.Count)
+        Write-Host '[ACTION] Searching for pairable Classic association endpoint...'
+      }
       Start-Sleep -Seconds 5
     }
   }
+
+  $discoveryMeta = [ordered]@{
+    cycles_attempted            = $cycle
+    target_seen                 = [bool]$targetSeenInWindow
+    non_target_candidates_seen  = [bool]$nonTargetSeenInWindow
+    elapsed_seconds             = [math]::Round(((Get-Date) - $discoveryStarted).TotalSeconds, 1)
+  }
+  $Context.discovery_meta = $discoveryMeta
 
   # Final classification
   if (-not $lastEnumeration) {
     $lastEnumeration = [ordered]@{
       target_discovered = $false
+      exact_target_discovered = $false
+      any_bluetooth_device_discovered = $false
       classic_enumeration_succeeded = $false
       classic_enumeration_all_failed = $true
       aep_enumeration_succeeded = $false
@@ -249,12 +404,33 @@ function Invoke-WapcBluetoothPairing {
     }
   }
 
-  if (-not $lastEnumeration.target_discovered) {
+  $exactTargetDiscovered = [bool](
+    $lastEnumeration.exact_target_discovered -or
+    ($lastRank -and ($lastRank.exact_target_discovered -or $lastRank.target_discovered))
+  )
+  $identityMismatchObserved = [bool](
+    $nonTargetSeenInWindow -and -not $exactTargetDiscovered
+  )
+
+  if (-not $exactTargetDiscovered) {
     Set-WapcStageResult -Results $Context.stages -Stage 'TargetDiscovered' -Value 'FAIL'
+    Set-WapcDownstreamStagesNotRun -Results $Context.stages -FromStage 'TargetClassicEndpoint'
     if (-not $failure) {
-      $failure = New-WapcFailure -Stage 'DISCOVERING' -Classification 'TARGET_NOT_DISCOVERED' `
-        -Reason 'Target not seen during discovery window'
+      $cls = if ($identityMismatchObserved) { 'TARGET_IDENTITY_MISMATCH' } else { 'TARGET_NOT_DISCOVERED' }
+      $reason = if ($identityMismatchObserved) {
+        ('Configured target {0} ({1}) was not discovered. A different device was observed.' -f `
+          $Context.target_name, $Context.target_address)
+      } else {
+        ('Configured target {0} ({1}) was not visible during the discovery window.' -f `
+          $Context.target_name, $Context.target_address)
+      }
+      if ($nonTargetSeenInWindow) {
+        $reason += ' Discovery infrastructure is healthy, but the configured target was not visible.'
+      }
+      $failure = New-WapcFailure -Stage 'DISCOVERING' -Classification $cls -Reason $reason
     }
+  } elseif (-not $rankerRan) {
+    Set-WapcDownstreamStagesNotRun -Results $Context.stages -FromStage 'TargetClassicEndpoint'
   }
 
   if ($lastEnumeration.classic_enumeration_all_failed -and -not $pairSuccess) {
@@ -263,65 +439,121 @@ function Invoke-WapcBluetoothPairing {
         -Classification 'CLASSIC_ENDPOINT_ENUMERATION_FAILED' `
         -Reason 'All Classic/AEP WinRT enumerations failed'
     }
-    Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumeration' -Value 'ERROR'
-    Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'UNKNOWN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'NOT_RUN'
-  } elseif ($lastRank -and $lastRank.pairability -eq 'UNKNOWN' -and -not $pairSuccess) {
+    Set-WapcStageResult -Results $Context.stages -Stage 'ClassicEnumerationCapability' -Value 'ERROR'
+    if ($exactTargetDiscovered) {
+      Set-WapcStageResult -Results $Context.stages -Stage 'Pairability' -Value 'UNKNOWN'
+      Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
+      Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
+    }
+  } elseif ($exactTargetDiscovered -and $lastRank -and $lastRank.pairability -eq 'UNKNOWN' -and -not $pairSuccess) {
     if (-not $failure) {
       $failure = New-WapcFailure -Stage 'RANKING_CANDIDATES' -Classification 'PAIRABILITY_UNDETERMINED' `
-        -Reason 'Enumeration incomplete; pairability cannot be determined'
+        -Reason 'Enumeration incomplete; pairability cannot be determined for the configured target'
     }
     Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'NOT_RUN'
-  } elseif ($lastRank -and $lastRank.pairability -eq 'NOT_PAIRABLE' -and -not $pairSuccess -and -not $DiscoveryOnly) {
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
+  } elseif ($exactTargetDiscovered -and $lastRank -and $lastRank.pairability -eq 'NOT_PAIRABLE' -and -not $pairSuccess -and -not $DiscoveryOnly) {
     if (-not $failure) {
       $failure = New-WapcFailure -Stage 'RANKING_CANDIDATES' -Classification 'DISCOVERABLE_NOT_PAIRABLE' `
-        -Reason 'Target visible but no pairable Classic endpoint found'
+        -Reason 'Exact target visible but no pairable Classic endpoint found'
     }
     Set-WapcStageResult -Results $Context.stages -Stage 'PairableEndpoint' -Value 'FAIL'
     Set-WapcStageResult -Results $Context.stages -Stage 'PairRequest' -Value 'NOT_RUN'
-    Set-WapcStageResult -Results $Context.stages -Stage 'PairingSucceeded' -Value 'NOT_RUN'
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
+  }
+
+  if ($pairAttempted -and -not $pairSuccess -and -not $failure) {
+    Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'FAIL'
+    if (-not $failure) {
+      $failure = New-WapcFailure -Stage 'PAIRING' -Classification 'PAIR_REQUEST_FAILED' `
+        -Reason 'PairAsync was attempted but did not succeed'
+    }
   }
 
   if ($pairSuccess -and -not $NoPair) {
     Set-WapcMachineState -Context $Context -State 'VERIFYING_AUDIO_PATH' -Log $Log
     $verification = Test-BluetoothPairVerification -Log $Log -WaitSeconds 30 `
-      -NamePatterns ($namePatterns | ForEach-Object { $_ })
-    if ($verification.audio_endpoint_ready) {
+      -NamePatterns ($namePatterns | ForEach-Object { $_ }) `
+      -DeviceAddress $Context.target_address -TargetName $Context.target_name
+    if ($verification.exact_target_audio_endpoint_found) {
       Set-WapcStageResult -Results $Context.stages -Stage 'AudioEndpoint' -Value 'PASS'
     } else {
       Set-WapcStageResult -Results $Context.stages -Stage 'AudioEndpoint' -Value 'FAIL'
+      $pairSuccess = $false
       if (-not $failure) {
         $failure = New-WapcFailure -Stage 'VERIFYING_AUDIO_PATH' `
           -Classification 'PAIRING_SUCCEEDED_AUDIO_ENDPOINT_MISSING' `
-          -Reason 'Pair succeeded but audio endpoint did not appear'
+          -Reason 'Pair/already-paired claimed but exact-target audio endpoint did not appear'
       }
     }
   } elseif (-not $pairAttempted) {
     Set-WapcStageResult -Results $Context.stages -Stage 'AudioEndpoint' -Value 'NOT_RUN'
   }
 
-  $classification = if ($failure) { $failure.classification } elseif ($pairSuccess -and $verification -and $verification.audio_endpoint_ready) { 'SUCCESS' } else { $null }
+  $null = Repair-WapcStageResults -Results $Context.stages
+
+  $audioReady = [bool]($verification -and $verification.exact_target_audio_endpoint_found)
+  $pairResultStage = [string]$Context.stages.PairResult
+  $invariantState = [ordered]@{
+    pair_request                        = $(if ($Context.stages.PairRequest) { $Context.stages.PairRequest } else { $pairRequestOutcome })
+    pair_result                         = $pairResultStage
+    pairing_succeeded                   = ($pairResultStage -eq 'PASS')
+    exact_target_already_paired         = $exactAlreadyPaired
+    exact_target_discovered             = $exactTargetDiscovered
+    exact_target_audio_endpoint_found   = $audioReady
+    exact_target_a2dp_endpoint_found    = [bool]($verification -and $verification.exact_target_a2dp_endpoint_found)
+    audio_endpoint_identity_match       = [bool]($verification -and $verification.audio_endpoint_identity_match)
+    a2dp_endpoint_identity_match        = [bool]($verification -and $verification.a2dp_endpoint_identity_match)
+    target_discovered_stage             = [string]$Context.stages.TargetDiscovered
+    final_success                       = $false
+    cleanup_removed_wrong_device        = $false
+  }
+  $invariantState.final_success = ($pairSuccess -and $audioReady)
+  $violations = @((Test-WapcRecoveryInvariants -State $invariantState) | Where-Object { $_ -and $_.code })
+  if ($violations.Count -gt 0) {
+    $pairSuccess = $false
+    $failure = New-WapcFailure -Stage 'STATE_VALIDATION' `
+      -Classification 'INTERNAL_STATE_INVARIANT_FAILURE' `
+      -Reason ('Invariant violations: ' + (($violations | ForEach-Object { $_.code }) -join ', ')) `
+      -Evidence $violations
+    if ($Context.stages.PairResult -eq 'PASS') {
+      Set-WapcStageResult -Results $Context.stages -Stage 'PairResult' -Value 'NOT_RUN'
+    }
+  }
+
+  $classification = if ($failure) {
+    $failure.classification
+  } elseif ($pairSuccess -and $audioReady) {
+    'SUCCESS'
+  } else {
+    $null
+  }
   if ($classification) { $Context.failure_classification = $classification }
   if ($failure) { [void]$Context.failures.Add($failure) }
 
   Write-WapcPairingDiagnosis -Context $Context -Enumeration $lastEnumeration `
-    -Pairability $(if ($lastRank) { $lastRank.pairability } else { 'UNKNOWN' }) `
-    -Classification $(if ($classification) { $classification } else { '' })
+    -Pairability $(if (-not $exactTargetDiscovered) { 'NOT_RUN' } elseif ($lastRank) { $lastRank.pairability } else { 'UNKNOWN' }) `
+    -Classification $(if ($classification) { $classification } else { '' }) `
+    -ObservedCandidates @($allCandidates.ToArray()) `
+    -ExactTargetDiscovered:$exactTargetDiscovered
 
   Write-WapcDiagnosticReport -Context $Context -Candidates @($allCandidates.ToArray()) `
-    -Enumeration $lastEnumeration -Pairing $pairingResult -Verification $verification
+    -Enumeration $lastEnumeration -Pairing $pairingResult -Verification $verification `
+    -DiscoveryMeta $discoveryMeta
 
   return [pscustomobject]@{
     pair_success = $pairSuccess
     pair_attempted = $pairAttempted
+    pair_request_outcome = $pairRequestOutcome
+    exact_target_discovered = $exactTargetDiscovered
+    exact_target_already_paired = $exactAlreadyPaired
     selected_candidate = $selectedCandidate
     enumeration = $lastEnumeration
     rank = $lastRank
     verification = $verification
     failure = $failure
     classification = $classification
+    invariant_violations = $violations
   }
 }
 

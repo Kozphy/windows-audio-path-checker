@@ -45,9 +45,12 @@ class AutoPairControlFlowTests(unittest.TestCase):
         for stage in (
             "PrivilegeCheck",
             "GhostCleanup",
-            "ClassicEnumeration",
+            "ClassicEnumerationCapability",
+            "TargetDiscovered",
+            "TargetClassicEndpoint",
             "Pairability",
             "PairRequest",
+            "PairResult",
             "AudioEndpoint",
         ):
             self.assertIn(stage, core)
@@ -85,6 +88,19 @@ class AutoPairControlFlowTests(unittest.TestCase):
         svc = _read(BT_DIR / "WapcBluetoothServices.psm1")
         self.assertIn("-ErrorAction Stop", svc)
         self.assertIn("effective_health", svc)
+
+    def test_stage_repair_and_invariant_validator_present(self):
+        core = _read(BT_DIR / "WapcBluetoothCore.psm1")
+        identity = _read(BT_DIR / "WapcBluetoothIdentity.psm1")
+        engine = _read(BT_DIR / "BluetoothPairingEngine.psm1")
+        self.assertIn("Repair-WapcStageResults", core)
+        self.assertIn("Set-WapcDownstreamStagesNotRun", core)
+        self.assertIn("Test-WapcRecoveryState", identity)
+        self.assertIn("Repair-WapcStageResults", engine)
+        self.assertNotRegex(
+            engine,
+            r"PairingSucceeded",
+        )
 
     def test_never_pairs_when_canpair_false_without_ranking(self):
         engine = _read(BT_DIR / "BluetoothPairingEngine.psm1")
