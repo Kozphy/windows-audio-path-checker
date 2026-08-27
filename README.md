@@ -1,185 +1,130 @@
 # Windows Audio Path Checker
 
-Evidence-driven diagnostics for Windows playback problems — especially Bluetooth
-headsets that show **Connected** but produce **no audio**.
+**Evidence-driven Windows endpoint reliability engineering for audio and Bluetooth failures.**
 
-> **Core principle:** `Bluetooth Connected ≠ Audio Working.`
+> **Core principle:** `Command succeeded ≠ system recovered.`
 
-The Windows sound test can succeed while apps are silent (per-app mute/routing),
-or Windows can show a headset as Connected while the A2DP → MEDIA → AudioEndpoint
-path never finished enumerating. This tool models that full path and tells you
-**which transition failed**.
-
-## Motivating failure (EDIFIER W800BT Pro)
+Windows can report a Bluetooth headset as **Connected** while the user still has no sound. A repair command can also exit successfully while A2DP, MEDIA, AudioEndpoint, routing, or application-session state remains broken. This project treats recovery as a **verifiable state transition**, not a successful command invocation.
 
 ```text
-EDIFIER connected
-+
-no AudioEndpoint
-+
-WinRT discovery unavailable (or auto-pair spam-looping on DeviceInformation)
+Detect → Diagnose → Decide → Remediate → Verify → Audit
 ```
 
-A recovery script that only resets Bluetooth cannot verify recovery. The upgraded
-system:
+## Why this exists
 
-1. Collects structured evidence (adapter, pair/connect, A2DP/MEDIA, endpoints, services)
-2. Classifies an explicit state (e.g. `MEDIA_NO_ENDPOINT`)
-3. Checks invariants (`connected ⇒ endpoint should exist`)
-4. Ranks hypotheses (`audio_endpoint_enumeration_failure`, …)
-5. Recommends the **lowest-risk** action (R0–R5)
-6. Verifies whether the **system** recovered — not merely whether a command exited 0
+Traditional troubleshooting scripts tend to answer **"Did the command run?"**. This project asks the harder reliability question:
 
-WinRT auto-pair is gated by a **one-shot capability probe**. If
-`Windows.Devices.Enumeration.DeviceInformation` cannot be projected in Windows
-PowerShell 5.1, discovery is skipped with a single structured failure — no
-90-second error spam.
+**"Did the system return to a healthy, observable state?"**
 
-**Encoding pitfall (fixed):** Windows PowerShell 5.1 loading UTF-8 *without BOM*
-can mis-parse Unicode punctuation (for example an em-dash `—` inside a
-double-quoted string). That made an `else` branch string absorb the rest of
-`wapc-bt-auto-pair.ps1`, so after `=== DISCOVERY CAPABILITY CHECK ===` the
-script skipped AUTO-PAIR and jumped to `DONE`. Repair scripts are now
-ASCII-only and report `FINAL RESULT` (`SUCCESS` / `REPAIR_INCOMPLETE` / …)
-instead of a naked `DONE`.
+It collects structured Windows evidence, classifies the failure state, ranks hypotheses, chooses the lowest-risk remediation, and independently verifies the post-action state.
 
-**Auto-pair upgrade (v0.5+):** `Fix-Edifier-Bluetooth.bat` runs
-`scripts/wapc-bt-auto-pair.ps1`, which preserves the cleanup pipeline then
-delegates discovery/pairing to modular WinRT stages:
+### FABE positioning
 
-```text
-BluetoothDiscovery.psm1       multi-selector + AssociationEndpoint enum
-BluetoothCandidateRanker.psm1 Python ranker (single source of truth)
-BluetoothPairingEngine.psm1   state machine, history, PairAsync gating
-BluetoothPairingVerifier.psm1 post-pair PnP / A2DP / AudioEndpoint wait
-```
-
-The engine never calls `PairAsync()` when `CanPair=False` and `IsPaired=False`.
-It ranks all EDIFIER endpoints (Classic vs BLE vs audio service), logs candidate
-metadata, and returns `DISCOVERABLE_NOT_PAIRABLE` when no pairable Classic
-association endpoint appears. Diagnostics JSON:
-`%TEMP%\wapc-bt-pair-diagnostics.json`.
-
-```powershell
-# Run as Administrator (hold headset in pairing mode when prompted)
-.\Fix-Edifier-Bluetooth.bat
-.\Fix-Edifier-Bluetooth.bat -Diagnostics -VerboseLog
-.\Fix-Edifier-Bluetooth.bat -WhatIf   # dry-run destructive cleanup only
-```
-
-After repair, verify with:
-
-```powershell
-python -m audio_path_checker --diagnose --device "EDIFIER W800BT Pro"
-```
-
-
-Requirements: Windows 10/11 and Python 3.10+.
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\python -m pip install -e .
-.\.venv\Scripts\python -m audio_path_checker --diagnose --device "EDIFIER W800BT Pro"
-.\.venv\Scripts\python -m audio_path_checker --diagnose --json
-```
-
-GUI / classic session scan:
-
-```powershell
-.\run_checker.bat
-# or
-.\.venv\Scripts\python -m audio_path_checker
-```
-
-## CLI safety modes
-
-| Flag | Behavior |
+| Layer | What this project demonstrates |
 |---|---|
-| `--diagnose` / `--dry-run` | Evidence + diagnosis + plan only (default safe path) |
-| `--repair` | Allow up to **R3** (refresh / scoped re-enumerate) |
-| `--aggressive-repair` | Allow up to **R5** (scoped pairing-cache clear) |
-| `--json` | Machine-readable pipeline output |
-| `--device NAME` | Scope headset matching (default EDIFIER W800BT Pro) |
-| `--no-artifacts` | Skip writing `artifacts/sessions/…` |
+| **Function** | Diagnose Windows audio/Bluetooth paths and perform controlled recovery |
+| **Advantage** | Separates action success from verified system recovery |
+| **Benefit** | Reduces blind troubleshooting and makes recovery decisions explainable and auditable |
+| **Evidence** | Structured evidence, explicit state machine, safety tiers, session artifacts, automated scenario tests, and an evaluation harness |
 
-Legacy opt-in repairs remain available:
+No performance percentage is claimed unless it is produced by a reproducible benchmark.
 
-```powershell
-.\.venv\Scripts\python -m audio_path_checker --unmute-browsers
-.\.venv\Scripts\python -m audio_path_checker --enable-bluetooth-adapter
-.\.venv\Scripts\python -m audio_path_checker --repair-bluetooth "EDIFIER W800BT Pro"
+## Reliability invariant
+
+```text
+Action exit code = 0
+        ≠
+Device recovered
+        ≠
+Audio path healthy
 ```
+
+A recovery is complete only when relevant postconditions are observed again.
+
+For Bluetooth audio, the modeled path is:
+
+```text
+Physical device
+  → Radio
+  → Paired
+  → Connected
+  → A2DP
+  → MEDIA
+  → AudioEndpoint
+  → Active
+  → Default route
+  → Audio engine
+  → App session
+  → Sound
+```
+
+## Motivating failure
+
+A real failure pattern that motivated the architecture:
+
+```text
+Bluetooth device reports Connected
++
+MEDIA / AudioEndpoint does not complete enumeration
++
+user has no sound
+```
+
+Resetting Bluetooth alone cannot prove recovery. The pipeline instead:
+
+1. **Detects** adapter, pairing, connection, A2DP/MEDIA, endpoint, service, and route evidence.
+2. **Diagnoses** an explicit state such as `MEDIA_NO_ENDPOINT`.
+3. **Checks invariants** such as `connected ⇒ expected downstream audio state`.
+4. **Ranks causes** rather than equating correlation with causation.
+5. **Decides** on the lowest-risk applicable action using R0–R5 safety tiers.
+6. **Remediates** only through explicit write paths.
+7. **Verifies** the resulting system state independently of command success.
+8. **Audits** the incident through structured before/action/after artifacts.
 
 ## Architecture
 
-Two runtime stacks:
-
-1. **Python diagnostic pipeline** — observe → classify → plan → verify → session artifacts  
-2. **Elevated PowerShell Bluetooth recovery** — cleanup → adapter/services → WinRT pair → audio verification  
-
 ```mermaid
 flowchart LR
-  CLI[CLI / GUI] --> Pipe[pipeline.py]
-  BAT[Fix-Edifier-Bluetooth.bat] --> PS[wapc-bt-auto-pair.ps1]
-  Pipe --> Coll[Collectors]
-  Coll --> Rules[RuleDiagnosisProvider]
-  Rules --> Plan[Remediation planner R0-R5]
-  Plan --> Vfy[Verifier]
-  Vfy --> Art[artifacts/sessions]
-  PS --> Win[Windows PnP / Services / Registry / WinRT]
-  Coll --> Win
+    O[Observe] --> E[Evidence]
+    E --> D[Diagnose]
+    D --> P[Policy / Risk]
+    P --> R[Remediate]
+    R --> V[Verify]
+    V --> A[Audit]
+    V -->|postcondition failed| D
 ```
+
+Two runtime stacks are used:
+
+1. **Python diagnostic pipeline** — observe → classify → plan → verify → session artifacts
+2. **Elevated PowerShell recovery** — scoped cleanup → adapter/services → WinRT pairing → audio verification
+
+The read path (`--diagnose` / `--dry-run`) does not mutate the system. Write paths require explicit invocation and Administrator privileges where Windows requires them.
+
+LLM/ML components are intentionally outside the execution trust boundary:
 
 ```text
-Observe → Collect → Normalize → Diagnose → Decide → Remediate → Verify → Audit
+Model proposes → Policy validates → Executor executes → Verifier confirms
 ```
 
-Read path (`--diagnose` / `--dry-run`) does not mutate the system. Write path
-(`Fix-Edifier-Bluetooth.bat`, legacy repair flags) requires Administrator for
-registry/PnP/service changes.
+A model must never directly execute privileged PowerShell.
 
-Full diagrams (pipeline, pairing state machine, trust boundaries, sequence,
-component table, failure taxonomy, gap analysis):
-[docs/architecture.md](docs/architecture.md).
+Full architecture material, including state machines, trust boundaries, sequence diagrams, component tables, failure taxonomy, and gap analysis, lives in [docs/architecture.md](docs/architecture.md).
 
-LLM agents (future) may **propose** actions only. They must never execute
-PowerShell directly:
+## Safety model
 
-```text
-LLM proposes → Policy validates → Executor executes → Verifier confirms
-```
-
-### Python modules
-
-| Area | Location |
+| Risk | Meaning |
 |---|---|
-| WinRT capability | `audio_path_checker/platform/winrt.py` + `scripts/Platform/WinRT.ps1` |
-| Evidence | `audio_path_checker/collectors/evidence.py` + `scripts/Collectors/Evidence.ps1` |
-| States | `audio_path_checker/models/states.py` |
-| Classifier / invariants / root cause | `audio_path_checker/diagnostics_engine/` |
-| Planner / verification | `audio_path_checker/remediation/` |
-| Pipeline + CLI report | `audio_path_checker/pipeline.py` |
-| Session trail | `audio_path_checker/session/artifacts.py` |
-| Evaluation scaffold | `audio_path_checker/evaluation/harness.py` |
-| Bluetooth pairing ranker | `audio_path_checker/bluetooth_pairing/` + `scripts/Bluetooth/*.psm1` |
-| Classic app-session scan | `audio_path_checker/diagnostics.py` (preserved) |
+| R0 | Observation / open Settings |
+| R1 | Safe refresh / re-query |
+| R2 | Service restart |
+| R3 | Scoped device re-enumeration / enable adapter |
+| R4 | Adapter radio bounce |
+| R5 | Scoped remove / re-pair / pairing-cache cleanup |
 
-## Evidence model
+The planner should prefer the **lowest-risk action capable of addressing the diagnosed state**. For example, a wrong default output must not trigger a Bluetooth pairing reset.
 
-Evidence is normalized JSON, for example:
-
-```json
-{
-  "device": { "name": "EDIFIER W800BT Pro", "paired": true, "connected": true },
-  "bluetooth": { "adapter_present": true, "adapter_status": "OK" },
-  "audio": {
-    "media_node_present": true,
-    "endpoint_present": false,
-    "endpoint_active": false
-  },
-  "services": { "bthserv": "Running", "Audiosrv": "Running" }
-}
-```
+Destructive or privileged operations are not treated as ordinary diagnostic reads. Dry-run/diagnostic behavior remains the safe default path.
 
 ## State machine
 
@@ -197,27 +142,144 @@ AUDIO_SERVICE_FAILURE
 AUDIO_PATH_HEALTHY
 ```
 
-Path model:
+The state machine makes failures testable: diagnosis is an assertion about observed evidence, not an opaque troubleshooting narrative.
 
-```text
-Physical device → Radio → Paired → Connected → A2DP → MEDIA
-  → AudioEndpoint → Active → Default route → Audio engine → App session → Sound
+## Evidence model
+
+Evidence is normalized into machine-readable records. Example:
+
+```json
+{
+  "device": {
+    "name": "EDIFIER W800BT Pro",
+    "paired": true,
+    "connected": true
+  },
+  "bluetooth": {
+    "adapter_present": true,
+    "adapter_status": "OK"
+  },
+  "audio": {
+    "media_node_present": true,
+    "endpoint_present": false,
+    "endpoint_active": false
+  },
+  "services": {
+    "bthserv": "Running",
+    "Audiosrv": "Running"
+  }
+}
 ```
 
-## Remediation risk model
+### Evidence discipline
 
-| Risk | Meaning |
+The project deliberately distinguishes:
+
+```text
+Observation ≠ proof
+Correlation ≠ causation
+Confidence ≠ certainty
+Command success ≠ recovery
+```
+
+Unknown or inaccessible Windows state should remain **unknown**, rather than being silently converted into success.
+
+## Auditable incident artifacts
+
+A diagnostic/recovery session can produce:
+
+```text
+artifacts/sessions/<timestamp>/
+  evidence-before.json
+  diagnosis.json
+  actions.jsonl
+  evidence-after.json
+  summary.json
+  dataset-record.json
+```
+
+This creates a replayable chain from **evidence → decision → action → verification** and also provides structured records for future evaluation or ML experiments.
+
+## Bluetooth pairing engine
+
+The elevated Bluetooth path is modularized into:
+
+```text
+BluetoothDiscovery.psm1
+    → multi-selector / AssociationEndpoint discovery
+
+BluetoothCandidateRanker.psm1
+    → deterministic candidate ranking
+
+BluetoothPairingEngine.psm1
+    → pairing state machine and PairAsync gating
+
+BluetoothPairingVerifier.psm1
+    → post-pair PnP / A2DP / AudioEndpoint verification
+```
+
+The engine does not call `PairAsync()` when the candidate is not pairable. It records candidate metadata and can return explicit outcomes such as `DISCOVERABLE_NOT_PAIRABLE` instead of pretending that discovery implies pairability.
+
+WinRT auto-pair is gated by a one-shot capability probe. Unsupported projection is reported once as structured evidence rather than producing a long error loop.
+
+## Quick start
+
+Requirements: **Windows 10/11** and **Python 3.10+**.
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
+
+# Safe diagnosis
+.\.venv\Scripts\python -m audio_path_checker --diagnose --device "EDIFIER W800BT Pro"
+
+# Machine-readable result
+.\.venv\Scripts\python -m audio_path_checker --diagnose --json
+```
+
+Classic GUI/session scan:
+
+```powershell
+.\run_checker.bat
+# or
+.\.venv\Scripts\python -m audio_path_checker
+```
+
+Elevated Bluetooth recovery:
+
+```powershell
+# Run as Administrator and place the headset in pairing mode when prompted.
+.\Fix-Edifier-Bluetooth.bat
+.\Fix-Edifier-Bluetooth.bat -Diagnostics -VerboseLog
+.\Fix-Edifier-Bluetooth.bat -WhatIf
+```
+
+Then independently verify:
+
+```powershell
+python -m audio_path_checker --diagnose --device "EDIFIER W800BT Pro"
+```
+
+## CLI safety modes
+
+| Flag | Behavior |
 |---|---|
-| R0 | Observation / open Settings |
-| R1 | Safe refresh / re-query |
-| R2 | Service restart |
-| R3 | Scoped device re-enumeration / enable adapter |
-| R4 | Adapter radio bounce |
-| R5 | Scoped remove / re-pair (BTHPORT cache clear) |
+| `--diagnose` / `--dry-run` | Evidence + diagnosis + plan only; default safe path |
+| `--repair` | Allow remediation up to R3 |
+| `--aggressive-repair` | Allow remediation up to R5 |
+| `--json` | Machine-readable pipeline output |
+| `--device NAME` | Scope device matching |
+| `--no-artifacts` | Skip writing session artifacts |
 
-Wrong default output must **not** trigger pairing reset.
+Legacy opt-in repairs remain available:
 
-## Example: EDIFIER connected, no sound
+```powershell
+.\.venv\Scripts\python -m audio_path_checker --unmute-browsers
+.\.venv\Scripts\python -m audio_path_checker --enable-bluetooth-adapter
+.\.venv\Scripts\python -m audio_path_checker --repair-bluetooth "EDIFIER W800BT Pro"
+```
+
+## Example diagnosis
 
 ```text
 EDIFIER W800BT Pro — Audio Path Diagnostic
@@ -243,46 +305,106 @@ refresh_audio_endpoint_inventory
 Risk: R1 LOW
 ```
 
-## Session artifacts
+The confidence value is a diagnostic estimate; it is not presented as certainty.
 
-Each diagnose run can write:
+## Code map
 
-```text
-artifacts/sessions/<timestamp>/
-  evidence-before.json
-  diagnosis.json
-  actions.jsonl
-  evidence-after.json
-  summary.json
-  dataset-record.json
-```
+| Area | Location |
+|---|---|
+| WinRT capability | `audio_path_checker/platform/winrt.py` + `scripts/Platform/WinRT.ps1` |
+| Evidence | `audio_path_checker/collectors/evidence.py` + `scripts/Collectors/Evidence.ps1` |
+| States | `audio_path_checker/models/states.py` |
+| Classifier / invariants / root cause | `audio_path_checker/diagnostics_engine/` |
+| Planner / verification | `audio_path_checker/remediation/` |
+| Pipeline + CLI report | `audio_path_checker/pipeline.py` |
+| Session trail | `audio_path_checker/session/artifacts.py` |
+| Evaluation scaffold | `audio_path_checker/evaluation/harness.py` |
+| Bluetooth pairing | `audio_path_checker/bluetooth_pairing/` + `scripts/Bluetooth/*.psm1` |
+| Classic app-session scan | `audio_path_checker/diagnostics.py` |
 
-## What it still checks (classic GUI)
+## Verification and evaluation
 
-- Windows Audio services, default endpoint, master mute/volume
-- PortAudio/WASAPI outputs
-- Per-app sessions (browser mute / 0% volume)
-- Optional browser unmute and Bluetooth adapter/pairing repairs
-
-## Development / tests
+Run the existing test suite with:
 
 ```powershell
 python -m unittest discover -s tests -v
 python -m compileall -q audio_path_checker
 ```
 
-Scenario coverage includes: connected-without-endpoint, wrong-default (no BT reset),
-WinRT capability failure (single message), disabled adapter, not paired, healthy path.
+Scenario coverage includes connected-without-endpoint, wrong-default/no-Bluetooth-reset, WinRT capability failure, disabled adapter, not paired, and healthy-path behavior.
 
-Evaluation harness (`audio_path_checker/evaluation/harness.py`) defines metrics
-(RCA accuracy, unsafe action rate, MTTD/MTTR, …) **without fabricating scores**.
+The evaluation harness defines metrics such as:
 
-## AI-agent roadmap
+- root-cause classification accuracy
+- unsafe-action rate
+- recovery success rate
+- false recovery / verification failure rate
+- MTTD / MTTR
 
-1. Keep `RuleDiagnosisProvider` as the reliable default
-2. Add `MLDiagnosisProvider` trained on `dataset-record.json` sessions
-3. Add `LLMDiagnosisProvider` for ranking/explanation only
-4. Hybrid: rules constrain unsafe actions; models rank remaining options
+**The repository intentionally does not fabricate benchmark scores.** Metrics become README claims only after they are produced by a fixed, reproducible benchmark protocol.
+
+## Flagship roadmap
+
+The next maturity step is not "more repair commands." It is stronger evidence.
+
+```text
+Fault injection
+    ↓
+Versioned JSONL benchmark
+    ↓
+Fixed baselines
+    ↓
+Repeated trials
+    ↓
+Confidence intervals
+    ↓
+Ablation
+    ↓
+Failure / error analysis
+    ↓
+CI regression gate
+```
+
+### Near-term goals
+
+- Build deterministic synthetic failure fixtures.
+- Establish fixed diagnostic and remediation baselines.
+- Measure RCA accuracy and unsafe-action rate.
+- Measure recovery and false-recovery rates separately.
+- Add confidence intervals instead of single-point claims.
+- Add failure taxonomy and error analysis to evaluation reports.
+- Gate regressions in CI against versioned benchmark fixtures.
+- Preserve local-first operation and explicit human control for risky remediation.
+
+### Explicit non-goals
+
+- Claiming 100% diagnostic certainty.
+- Treating successful process execution as proof of recovery.
+- Giving an LLM unrestricted privileged execution.
+- Hiding destructive actions behind automatic behavior.
+- Publishing sensitive host evidence as benchmark data.
+
+## Product direction
+
+The current repository is intentionally a focused Windows audio/Bluetooth reliability system. Its architecture can later support broader endpoint reliability domains without weakening the evidence model:
+
+```text
+Endpoint telemetry
+    ↓
+Failure detection
+    ↓
+Root-cause ranking
+    ↓
+Policy / risk decision
+    ↓
+Human-approved remediation
+    ↓
+Independent verification
+    ↓
+Audit evidence
+```
+
+That evolution turns the repository from a collection of troubleshooting utilities into an **evidence-driven endpoint reliability decision platform**.
 
 ## License
 
